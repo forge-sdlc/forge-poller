@@ -170,19 +170,23 @@ class TicketWatcher:
             comment = comments[-1]
             body = _extract_comment_body(comment.get("body"))
             author = comment.get("author", {})
-            logger.info(f"{ticket_key}: new comment from {author.get('displayName')}")
-            await forwarder.forward_jira(
-                payloads.comment_created(
-                    ticket_key=ticket_key,
-                    issue_type=state.issue_type,
-                    status=new_status,
-                    summary=new_summary,
-                    labels=new_labels,
-                    body=body,
-                    author_account_id=author.get("accountId", ""),
-                    author_display_name=author.get("displayName", ""),
+            bot_id = get_settings().forge_bot_account_id
+            if bot_id and author.get("accountId") == bot_id:
+                logger.debug(f"{ticket_key}: skipping comment from Forge bot")
+            else:
+                logger.info(f"{ticket_key}: new comment from {author.get('displayName')}")
+                await forwarder.forward_jira(
+                    payloads.comment_created(
+                        ticket_key=ticket_key,
+                        issue_type=state.issue_type,
+                        status=new_status,
+                        summary=new_summary,
+                        labels=new_labels,
+                        body=body,
+                        author_account_id=author.get("accountId", ""),
+                        author_display_name=author.get("displayName", ""),
+                    )
                 )
-            )
 
         # Discover PR if not yet known
         repo, pr_number, branch = state.repo, state.pr_number, state.branch

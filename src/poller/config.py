@@ -24,6 +24,10 @@ class Settings(BaseSettings):
         default=30,
         description="Polling interval in seconds",
     )
+    forge_bot_account_id: str = Field(
+        default="",
+        description="Jira account ID of the Forge service account — comments from this account are ignored",
+    )
 
 
 _settings: Settings | None = None
