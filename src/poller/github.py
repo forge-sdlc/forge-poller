@@ -20,10 +20,10 @@ class GitHubClient:
             r.raise_for_status()
             return r.json()
 
-    async def get_check_runs(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
+    async def get_check_runs(self, repo: str, head_sha: str) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(
-                f"https://api.github.com/repos/{repo}/pulls/{pr_number}/checks",
+                f"https://api.github.com/repos/{repo}/commits/{head_sha}/check-runs",
                 params={"per_page": 100},
             )
             r.raise_for_status()

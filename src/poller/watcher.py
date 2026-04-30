@@ -21,6 +21,7 @@ class TicketState:
     repo: str | None
     pr_number: int | None
     branch: str | None
+    head_sha: str | None
     pr_title: str | None
     pr_url: str | None
     last_check_status: str | None
@@ -87,7 +88,7 @@ class TicketWatcher:
         status = fields.get("status", {}).get("name", "")
         summary = fields.get("summary", "")
 
-        repo = pr_number = branch = pr_title = pr_url = None
+        repo = pr_number = branch = head_sha = pr_title = pr_url = None
         try:
             remote_links = await jira.get_remote_links(ticket_key)
             info = extract_pr_info(remote_links)
@@ -96,6 +97,7 @@ class TicketWatcher:
                 gh = GitHubClient()
                 pr = await gh.get_pr(repo, pr_number)
                 branch = pr.get("head", {}).get("ref", "")
+                head_sha = pr.get("head", {}).get("sha", "")
                 pr_title = pr.get("title", "")
                 pr_url = pr.get("html_url", "")
         except Exception as e:
@@ -104,10 +106,10 @@ class TicketWatcher:
         last_check_status = last_check_conclusion = None
         last_review_id = None
 
-        if repo and pr_number:
+        if repo and head_sha:
             try:
                 gh = GitHubClient()
-                check_runs = await gh.get_check_runs(repo, pr_number)
+                check_runs = await gh.get_check_runs(repo, head_sha)
                 result = latest_check_conclusion(check_runs)
                 if result:
                     last_check_status, last_check_conclusion = result
@@ -128,6 +130,7 @@ class TicketWatcher:
             repo=repo,
             pr_number=pr_number,
             branch=branch,
+            head_sha=head_sha,
             pr_title=pr_title,
             pr_url=pr_url,
             last_check_status=last_check_status,
@@ -190,7 +193,7 @@ class TicketWatcher:
 
         # Discover PR if not yet known
         repo, pr_number, branch = state.repo, state.pr_number, state.branch
-        pr_title, pr_url = state.pr_title, state.pr_url
+        head_sha, pr_title, pr_url = state.head_sha, state.pr_title, state.pr_url
         if not pr_number:
             try:
                 remote_links = await jira.get_remote_links(ticket_key)
@@ -200,6 +203,7 @@ class TicketWatcher:
                     gh = GitHubClient()
                     pr = await gh.get_pr(repo, pr_number)
                     branch = pr.get("head", {}).get("ref", "")
+                    head_sha = pr.get("head", {}).get("sha", "")
                     pr_title = pr.get("title", "")
                     pr_url = pr.get("html_url", "")
                     logger.info(f"{ticket_key}: discovered PR {repo}#{pr_number}")
@@ -213,9 +217,10 @@ class TicketWatcher:
         if repo and pr_number:
             gh = GitHubClient()
 
-            # Check merged
+            # Check merged — also refresh head_sha in case new commits were pushed
             try:
                 pr_data = await gh.get_pr(repo, pr_number)
+                head_sha = pr_data.get("head", {}).get("sha", head_sha)
                 if pr_data.get("merged"):
                     logger.info(f"{ticket_key}: PR merged")
                     await forwarder.forward_github(
@@ -235,7 +240,7 @@ class TicketWatcher:
 
             # CI status
             try:
-                check_runs = await gh.get_check_runs(repo, pr_number)
+                check_runs = await gh.get_check_runs(repo, head_sha or "")
                 result = latest_check_conclusion(check_runs)
                 if result:
                     new_check_status, new_check_conclusion = result
@@ -291,6 +296,7 @@ class TicketWatcher:
                     repo=repo,
                     pr_number=pr_number,
                     branch=branch,
+                    head_sha=head_sha,
                     pr_title=pr_title,
                     pr_url=pr_url,
                     last_check_status=last_check_status,
