@@ -26,6 +26,7 @@ class TicketState:
     pr_url: str | None
     last_check_status: str | None
     last_check_conclusion: str | None
+    last_completed_count: int | None
     last_review_id: int | None
 
 
@@ -104,6 +105,7 @@ class TicketWatcher:
             logger.debug(f"Could not fetch PR info for {ticket_key}: {e}")
 
         last_check_status = last_check_conclusion = None
+        last_completed_count = None
         last_review_id = None
 
         if repo and head_sha:
@@ -113,6 +115,7 @@ class TicketWatcher:
                 result = latest_check_conclusion(check_runs)
                 if result:
                     last_check_status, last_check_conclusion = result
+                last_completed_count = sum(1 for c in check_runs if c.get("status") == "completed")
                 reviews = await gh.get_reviews(repo, pr_number)
                 rev = latest_review(reviews)
                 if rev:
@@ -135,6 +138,7 @@ class TicketWatcher:
             pr_url=pr_url,
             last_check_status=last_check_status,
             last_check_conclusion=last_check_conclusion,
+            last_completed_count=last_completed_count,
             last_review_id=last_review_id,
         )
 
@@ -212,6 +216,7 @@ class TicketWatcher:
 
         last_check_status = state.last_check_status
         last_check_conclusion = state.last_check_conclusion
+        last_completed_count = state.last_completed_count
         last_review_id = state.last_review_id
 
         if repo and pr_number:
@@ -241,11 +246,17 @@ class TicketWatcher:
             # CI status
             try:
                 check_runs = await gh.get_check_runs(repo, head_sha or "")
+                new_completed_count = sum(1 for c in check_runs if c.get("status") == "completed")
                 result = latest_check_conclusion(check_runs)
                 if result:
                     new_check_status, new_check_conclusion = result
-                    if (new_check_status, new_check_conclusion) != (last_check_status, last_check_conclusion):
-                        logger.info(f"{ticket_key}: CI {new_check_status}/{new_check_conclusion}")
+                    conclusion_changed = (new_check_status, new_check_conclusion) != (last_check_status, last_check_conclusion)
+                    more_completed = last_completed_count is not None and new_completed_count > last_completed_count
+                    if conclusion_changed or more_completed:
+                        logger.info(
+                            f"{ticket_key}: CI {new_check_status}/{new_check_conclusion} "
+                            f"({new_completed_count}/{len(check_runs)} checks complete)"
+                        )
                         await forwarder.forward_github(
                             payloads.check_suite_completed(
                                 repo=repo,
@@ -257,6 +268,7 @@ class TicketWatcher:
                         )
                         last_check_status = new_check_status
                         last_check_conclusion = new_check_conclusion
+                last_completed_count = new_completed_count
             except Exception as e:
                 logger.debug(f"CI check failed for {ticket_key}: {e}")
 
@@ -301,6 +313,7 @@ class TicketWatcher:
                     pr_url=pr_url,
                     last_check_status=last_check_status,
                     last_check_conclusion=last_check_conclusion,
+                    last_completed_count=last_completed_count,
                     last_review_id=last_review_id,
                 )
 
