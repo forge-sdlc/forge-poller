@@ -12,6 +12,12 @@ dependencies = [
 
 [project.scripts]
 poller = "poller.main:run"
+forge-cli = "poller.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
 
 [build-system]
 requires = ["hatchling"]

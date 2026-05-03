@@ -28,6 +28,14 @@ class Settings(BaseSettings):
         default="",
         description="Jira account ID of the Forge service account — comments from this account are ignored",
     )
+    beta_invite_code: str = Field(
+        default="",
+        description="Shared invite code for beta access — leave empty to disable the check",
+    )
+    poller_state_file: str = Field(
+        default="",
+        description="Path to JSON state file for persistence — leave empty to disable",
+    )
 
 
 _settings: Settings | None = None

@@ -1,38 +1,24 @@
 import asyncio
 import logging
-from dataclasses import dataclass, field
 
 from poller import forwarder, payloads
 from poller.config import get_settings
 from poller.github import GitHubClient, latest_check_conclusion, latest_review
 from poller.jira import JiraClient, extract_pr_info
+from poller.models import TicketState
+from poller.persistence import load_state, save_state
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class TicketState:
-    ticket_key: str
-    issue_type: str
-    status: str
-    summary: str
-    labels: set[str]
-    last_comment_id: str | None
-    repo: str | None
-    pr_number: int | None
-    branch: str | None
-    head_sha: str | None
-    pr_title: str | None
-    pr_url: str | None
-    last_check_status: str | None
-    last_check_conclusion: str | None
-    last_completed_count: int | None
-    last_review_id: int | None
-
-
 class TicketWatcher:
     def __init__(self) -> None:
-        self._state: dict[str, TicketState] = {}
+        self._state_file = get_settings().poller_state_file
+        if self._state_file:
+            self._state = load_state(self._state_file)
+            logger.info(f"Restored {len(self._state)} ticket(s) from {self._state_file!r}")
+        else:
+            self._state: dict[str, TicketState] = {}
         self._lock = asyncio.Lock()
 
     async def add(self, ticket_key: str) -> None:
@@ -43,6 +29,8 @@ class TicketWatcher:
         async with self._lock:
             self._state[ticket_key] = state
         logger.info(f"Watching {ticket_key} (labels={state.labels})")
+        if self._state_file:
+            save_state(self._state_file, self._state)
 
     async def remove(self, ticket_key: str) -> bool:
         async with self._lock:
@@ -50,6 +38,8 @@ class TicketWatcher:
                 return False
             del self._state[ticket_key]
         logger.info(f"Stopped watching {ticket_key}")
+        if self._state_file:
+            save_state(self._state_file, self._state)
         return True
 
     def list(self) -> list[dict]:
@@ -316,6 +306,8 @@ class TicketWatcher:
                     last_completed_count=last_completed_count,
                     last_review_id=last_review_id,
                 )
+        if self._state_file:
+            save_state(self._state_file, self._state)
 
 
 def _extract_comment_body(body: object) -> str:
