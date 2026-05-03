@@ -32,6 +32,10 @@ class Settings(BaseSettings):
         default="",
         description="Shared invite code for beta access — leave empty to disable the check",
     )
+    poller_state_file: str = Field(
+        default="",
+        description="Path to JSON state file for persistence — leave empty to disable",
+    )
 
 
 _settings: Settings | None = None

@@ -20,3 +20,14 @@ def test_beta_invite_code_reads_from_env(monkeypatch):
 def test_beta_invite_code_defaults_to_empty():
     settings = config_module.Settings()
     assert settings.beta_invite_code == ""
+
+
+def test_poller_state_file_defaults_to_empty():
+    settings = config_module.Settings()
+    assert settings.poller_state_file == ""
+
+
+def test_poller_state_file_reads_from_env(monkeypatch):
+    monkeypatch.setenv("POLLER_STATE_FILE", "/tmp/state.json")
+    settings = config_module.Settings()
+    assert settings.poller_state_file == "/tmp/state.json"
