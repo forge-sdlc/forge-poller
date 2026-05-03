@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
+from poller.config import get_settings
 from poller.watcher import TicketWatcher
 
 logging.basicConfig(
@@ -34,7 +35,16 @@ class WatchRequest(BaseModel):
 
 
 @app.post("/watch", status_code=202)
-async def watch(body: WatchRequest) -> dict[str, Any]:
+async def watch(
+    body: WatchRequest,
+    x_invite_code: str | None = Header(default=None),
+) -> dict[str, Any]:
+    settings = get_settings()
+    if settings.beta_invite_code and x_invite_code != settings.beta_invite_code:
+        raise HTTPException(
+            status_code=403,
+            detail="Wrong password.\nForge is running on an exclusive beta right now — please ask to join on #forge-sdlc",
+        )
     for key in body.tickets:
         await watcher.add(key.upper())
     return {"watching": watcher.list()}
