@@ -1,33 +1,13 @@
 import asyncio
 import logging
-from dataclasses import dataclass, field
 
 from poller import forwarder, payloads
 from poller.config import get_settings
 from poller.github import GitHubClient, latest_check_conclusion, latest_review
 from poller.jira import JiraClient, extract_pr_info
+from poller.models import TicketState
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class TicketState:
-    ticket_key: str
-    issue_type: str
-    status: str
-    summary: str
-    labels: set[str]
-    last_comment_id: str | None
-    repo: str | None
-    pr_number: int | None
-    branch: str | None
-    head_sha: str | None
-    pr_title: str | None
-    pr_url: str | None
-    last_check_status: str | None
-    last_check_conclusion: str | None
-    last_completed_count: int | None
-    last_review_id: int | None
 
 
 class TicketWatcher:
