@@ -47,6 +47,24 @@ POLL_INTERVAL=30                          # seconds between polls
 
 Set `POLL_INTERVAL` lower (e.g. `10`) for faster iteration, higher for quieter logs.
 
+### Beta access (optional)
+
+```env
+BETA_INVITE_CODE=your-secret-code
+```
+
+When set, the `/watch` endpoint requires an `X-Invite-Code` header matching this value. Requests without a valid code receive a 403. Leave empty or unset to disable the check entirely.
+
+Use `forge-cli register` (see below) instead of raw `curl` to handle the code prompt automatically.
+
+### Persistence (optional)
+
+```env
+POLLER_STATE_FILE=./poller-state.json
+```
+
+When set, the poller saves the full ticket state (labels, last comment, PR info, CI status) to this JSON file after every change and restores it automatically on startup — so the watch list and all state survive a restart. Leave empty or unset to disable; the watch list starts fresh each run.
+
 ## Running
 
 ```bash
@@ -55,7 +73,26 @@ uv run uvicorn poller.main:app --port 8001
 
 ## Usage
 
-### Watch a ticket
+### forge-cli (beta)
+
+If you have been given a beta invite code, install the CLI and use it instead of raw `curl`:
+
+```bash
+pip install git+https://github.com/forge-sdlc/forge-poller-plugin.git
+```
+
+Then register a ticket:
+
+```bash
+forge-cli register AISOS-123
+# Invite code: (hidden prompt)
+# Welcome to the Forge beta!
+# Ticket AISOS-123 is now being watched.
+```
+
+By default the CLI talks to `http://localhost:8001`. Set `FORGE_POLLER_URL` to override.
+
+### Watch a ticket (curl)
 
 ```bash
 curl -X POST http://localhost:8001/watch \
