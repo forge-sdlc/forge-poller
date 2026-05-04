@@ -3,7 +3,7 @@ import logging
 
 from poller import forwarder, payloads
 from poller.config import get_settings
-from poller.github import GitHubClient, latest_check_conclusion, latest_review
+from poller.github import GitHubClient, check_suites_conclusion, latest_review
 from poller.jira import JiraClient, extract_pr_info
 from poller.models import TicketState
 from poller.persistence import load_state, save_state
@@ -101,11 +101,11 @@ class TicketWatcher:
         if repo and head_sha:
             try:
                 gh = GitHubClient()
-                check_runs = await gh.get_check_runs(repo, head_sha)
-                result = latest_check_conclusion(check_runs)
+                suites = await gh.get_check_suites(repo, head_sha)
+                result = check_suites_conclusion(suites)
                 if result:
                     last_check_status, last_check_conclusion = result
-                last_completed_count = sum(1 for c in check_runs if c.get("status") == "completed")
+                last_completed_count = sum(1 for s in suites if s.get("status") == "completed")
                 reviews = await gh.get_reviews(repo, pr_number)
                 rev = latest_review(reviews)
                 if rev:
@@ -233,19 +233,22 @@ class TicketWatcher:
             except Exception as e:
                 logger.debug(f"PR merge check failed for {ticket_key}: {e}")
 
-            # CI status
+            # CI status — use check_suites, not individual check_runs.
+            # GitHub marks a suite status="completed" only when ALL its child
+            # check_runs are done. Checking the suite is authoritative; counting
+            # individual check_runs is not because GitHub registers them lazily.
             try:
-                check_runs = await gh.get_check_runs(repo, head_sha or "")
-                new_completed_count = sum(1 for c in check_runs if c.get("status") == "completed")
-                result = latest_check_conclusion(check_runs)
+                suites = await gh.get_check_suites(repo, head_sha or "")
+                total_suites = len(suites)
+                new_completed_count = sum(1 for s in suites if s.get("status") == "completed")
+                result = check_suites_conclusion(suites)
                 if result:
                     new_check_status, new_check_conclusion = result
                     conclusion_changed = (new_check_status, new_check_conclusion) != (last_check_status, last_check_conclusion)
-                    more_completed = last_completed_count is not None and new_completed_count > last_completed_count
-                    if conclusion_changed or more_completed:
+                    if conclusion_changed:
                         logger.info(
-                            f"{ticket_key}: CI {new_check_status}/{new_check_conclusion} "
-                            f"({new_completed_count}/{len(check_runs)} checks complete)"
+                            f"{ticket_key}: CI all suites done — {new_check_conclusion} "
+                            f"({new_completed_count}/{total_suites} suites complete)"
                         )
                         await forwarder.forward_github(
                             payloads.check_suite_completed(
@@ -258,6 +261,11 @@ class TicketWatcher:
                         )
                         last_check_status = new_check_status
                         last_check_conclusion = new_check_conclusion
+                else:
+                    logger.debug(
+                        f"{ticket_key}: CI suites still running "
+                        f"({new_completed_count}/{total_suites} suites complete)"
+                    )
                 last_completed_count = new_completed_count
             except Exception as e:
                 logger.debug(f"CI check failed for {ticket_key}: {e}")

@@ -29,6 +29,15 @@ class GitHubClient:
             r.raise_for_status()
             return r.json().get("check_runs", [])
 
+    async def get_check_suites(self, repo: str, head_sha: str) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(headers=self._headers) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{repo}/commits/{head_sha}/check-suites",
+                params={"per_page": 100},
+            )
+            r.raise_for_status()
+            return r.json().get("check_suites", [])
+
     async def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(
@@ -39,8 +48,27 @@ class GitHubClient:
             return r.json()
 
 
+def check_suites_conclusion(suites: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """Return (status, conclusion) across all check suites for a commit, or None.
+
+    Returns None if there are no suites or any suite is still running.
+    Only returns once every suite has status='completed', at which point the
+    worst conclusion wins: failure > neutral > success.
+    This is the authoritative signal — GitHub marks a suite completed only
+    when all its child check_runs are done.
+    """
+    if not suites:
+        return None
+    for suite in suites:
+        if suite.get("status") != "completed":
+            return None
+    priority = {"failure": 0, "timed_out": 1, "cancelled": 2, "neutral": 3, "success": 4, "skipped": 5}
+    worst = min(suites, key=lambda s: priority.get(s.get("conclusion", "success"), 99))
+    return "completed", worst.get("conclusion", "success")
+
+
 def latest_check_conclusion(check_runs: list[dict[str, Any]]) -> tuple[str, str] | None:
-    """Return (status, conclusion) of the most recently completed check suite run, or None."""
+    """Return (status, conclusion) of the most recently completed check run, or None."""
     completed = [c for c in check_runs if c.get("status") == "completed"]
     if not completed:
         return None
