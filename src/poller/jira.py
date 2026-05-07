@@ -39,6 +39,20 @@ class JiraClient:
             r.raise_for_status()
             return r.json()
 
+    async def search_children(self, parent_key: str) -> list[str]:
+        """Return keys of active forge-managed children of parent_key."""
+        jql = (
+            f'labels = "forge:managed" AND labels = "forge:parent:{parent_key}"'
+            f' AND issuetype in (Epic, Task)'
+        )
+        async with httpx.AsyncClient(headers=self._headers) as client:
+            r = await client.post(
+                f"{self._base}/rest/api/3/search/jql",
+                json={"jql": jql, "fields": ["summary"], "maxResults": 100},
+            )
+            r.raise_for_status()
+            return [issue["key"] for issue in r.json().get("issues", [])]
+
 
 def extract_pr_info(remote_links: list[dict[str, Any]]) -> tuple[str, int, str] | None:
     """Return (owner/repo, pr_number, branch) from Jira remote links, or None."""

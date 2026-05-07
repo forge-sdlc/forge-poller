@@ -43,14 +43,30 @@ class TicketWatcher:
         return True
 
     def list(self) -> list[dict]:
-        return [
-            {
+        def _entry(s: TicketState, children: list[dict] | None = None) -> dict:
+            return {
                 "ticket_key": s.ticket_key,
                 "issue_type": s.issue_type,
                 "labels": sorted(s.labels),
                 "pr": f"{s.repo}#{s.pr_number}" if s.pr_number else None,
+                "children": children if children is not None else [],
             }
+
+        # Build parent → children mapping from forge:parent: labels
+        children_of: dict[str, list[dict]] = {}
+        child_keys: set[str] = set()
+        for s in self._state.values():
+            for label in s.labels:
+                if label.startswith("forge:parent:"):
+                    parent_key = label[len("forge:parent:"):]
+                    if parent_key in self._state:
+                        children_of.setdefault(parent_key, []).append(_entry(s))
+                        child_keys.add(s.ticket_key)
+
+        return [
+            _entry(s, children_of.get(s.ticket_key, []))
             for s in self._state.values()
+            if s.ticket_key not in child_keys
         ]
 
     async def run(self) -> None:
@@ -131,6 +147,30 @@ class TicketWatcher:
             last_completed_count=last_completed_count,
             last_review_id=last_review_id,
         )
+
+    async def _sync_epics(self, feature_key: str) -> None:
+        """Auto-add/remove child Epic and Task watches for a Feature ticket."""
+        try:
+            jira = JiraClient()
+            active_keys = set(await jira.search_children(feature_key))
+        except Exception as e:
+            logger.warning(f"Epic sync failed for {feature_key}: {e}")
+            return
+
+        parent_label = f"forge:parent:{feature_key}"
+        async with self._lock:
+            watched_children = {
+                key for key, state in self._state.items()
+                if parent_label in state.labels
+            }
+
+        for key in active_keys - watched_children:
+            logger.info(f"Auto-watching child {key} of {feature_key}")
+            await self.add(key)
+
+        for key in watched_children - active_keys:
+            logger.info(f"Auto-unwatching archived child {key} of {feature_key}")
+            await self.remove(key)
 
     async def _poll(self, ticket_key: str) -> None:
         async with self._lock:
@@ -316,6 +356,9 @@ class TicketWatcher:
                 )
         if self._state_file:
             save_state(self._state_file, self._state)
+
+        if state.issue_type in ("Feature", "Story"):
+            await self._sync_epics(ticket_key)
 
 
 def _extract_comment_body(body: object) -> str:
