@@ -12,7 +12,7 @@ dependencies = [
 
 [project.scripts]
 poller = "poller.main:run"
-forge-cli = "poller.cli:main"
+forge-watch = "poller.cli:main"
 
 [dependency-groups]
 dev = [
