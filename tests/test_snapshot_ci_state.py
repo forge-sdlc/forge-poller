@@ -1,0 +1,181 @@
+"""Tests for snapshot/poll CI state handling fixes.
+
+Covers two bugs:
+1. _snapshot() captured current CI conclusion as baseline, causing the poller to
+   never fire if a ticket was registered after CI already completed.
+2. CI check exceptions were logged at DEBUG level, hiding failures silently.
+"""
+
+import asyncio
+import logging
+from unittest.mock import AsyncMock, patch
+
+import poller.config as config_module
+
+from poller.models import TicketState
+from poller.watcher import TicketWatcher
+
+
+def reset_settings_env(monkeypatch):
+    monkeypatch.setattr(config_module, "_settings", None)
+    monkeypatch.setenv("JIRA_BASE_URL", "http://jira.example.com")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "test@example.com")
+    monkeypatch.setenv("JIRA_API_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghtoken")
+
+
+def _make_jira_mock(labels=None, comments=None):
+    mock = AsyncMock()
+    mock.get_issue.return_value = {
+        "fields": {
+            "labels": labels or [],
+            "comment": {"comments": comments or []},
+            "issuetype": {"name": "Bug"},
+            "status": {"name": "In Progress"},
+            "summary": "Test bug",
+        }
+    }
+    mock.get_remote_links.return_value = [
+        {"object": {"url": "https://github.com/forge-sdlc/forge/pull/52"}}
+    ]
+    return mock
+
+
+def _make_github_mock(suite_status="completed", suite_conclusion="failure", merged=False):
+    mock = AsyncMock()
+    mock.get_pr.return_value = {
+        "head": {"ref": "forge/aisos-701", "sha": "abc123"},
+        "title": "Test PR",
+        "html_url": "https://github.com/forge-sdlc/forge/pull/52",
+        "merged": merged,
+    }
+    mock.get_check_suites.return_value = [
+        {"status": suite_status, "conclusion": suite_conclusion}
+    ]
+    mock.get_reviews.return_value = []
+    return mock
+
+
+def _make_watched_state(
+    last_check_status=None,
+    last_check_conclusion=None,
+) -> TicketState:
+    return TicketState(
+        ticket_key="BUG-42",
+        issue_type="Bug",
+        status="In Progress",
+        summary="Test bug",
+        labels=set(),
+        last_comment_id=None,
+        repo="forge-sdlc/forge",
+        pr_number=52,
+        branch="forge/aisos-701",
+        head_sha="abc123",
+        pr_title="Test PR",
+        pr_url="https://github.com/forge-sdlc/forge/pull/52",
+        last_check_status=last_check_status,
+        last_check_conclusion=last_check_conclusion,
+        last_completed_count=None,
+        last_review_id=None,
+    )
+
+
+class TestSnapshotDoesNotCaptureCiState:
+    """_snapshot() must not record CI conclusion as baseline.
+
+    Recording it causes missed triggers when a ticket is registered after CI
+    has already completed — every subsequent poll sees the same conclusion and
+    treats it as 'no change'.
+    """
+
+    def test_snapshot_leaves_ci_conclusion_as_none_when_ci_completed(self, monkeypatch):
+        """CI already done at registration time → snapshot stores None, not the conclusion."""
+        reset_settings_env(monkeypatch)
+        watcher = TicketWatcher()
+        mock_jira = _make_jira_mock()
+        mock_gh = _make_github_mock(suite_status="completed", suite_conclusion="failure")
+
+        with (
+            patch("poller.watcher.JiraClient", return_value=mock_jira),
+            patch("poller.watcher.GitHubClient", return_value=mock_gh),
+        ):
+            state = asyncio.run(watcher._snapshot("BUG-42"))
+
+        assert state.last_check_status is None
+        assert state.last_check_conclusion is None
+
+    def test_snapshot_leaves_ci_conclusion_as_none_when_ci_succeeded(self, monkeypatch):
+        """Same: snapshot must not record 'success' as baseline either."""
+        reset_settings_env(monkeypatch)
+        watcher = TicketWatcher()
+        mock_jira = _make_jira_mock()
+        mock_gh = _make_github_mock(suite_status="completed", suite_conclusion="success")
+
+        with (
+            patch("poller.watcher.JiraClient", return_value=mock_jira),
+            patch("poller.watcher.GitHubClient", return_value=mock_gh),
+        ):
+            state = asyncio.run(watcher._snapshot("BUG-42"))
+
+        assert state.last_check_status is None
+        assert state.last_check_conclusion is None
+
+    def test_first_poll_fires_trigger_when_ci_completed_before_registration(self, monkeypatch):
+        """When ticket is registered after CI already failed, the first poll fires the trigger."""
+        reset_settings_env(monkeypatch)
+        watcher = TicketWatcher()
+        # Snapshot stored None (fixed snapshot) → first poll must fire
+        watcher._state = {"BUG-42": _make_watched_state(
+            last_check_status=None,
+            last_check_conclusion=None,
+        )}
+
+        mock_jira = _make_jira_mock()
+        mock_gh = _make_github_mock(suite_status="completed", suite_conclusion="failure")
+
+        forwarded = []
+
+        async def fake_forward(payload, event_type):
+            forwarded.append((payload, event_type))
+
+        with (
+            patch("poller.watcher.JiraClient", return_value=mock_jira),
+            patch("poller.watcher.GitHubClient", return_value=mock_gh),
+            patch("poller.watcher.forwarder.forward_github", side_effect=fake_forward),
+        ):
+            asyncio.run(watcher._poll("BUG-42"))
+
+        assert len(forwarded) == 1
+        assert forwarded[0][1] == "check_suite"
+        assert forwarded[0][0]["check_suite"]["conclusion"] == "failure"
+
+
+class TestCiCheckExceptionLogLevel:
+    """CI check exceptions must be logged at WARNING, not DEBUG."""
+
+    def test_github_api_failure_logged_at_warning(self, monkeypatch, caplog):
+        """When get_check_suites raises, the error appears at WARNING level."""
+        reset_settings_env(monkeypatch)
+        watcher = TicketWatcher()
+        watcher._state = {"BUG-42": _make_watched_state()}
+
+        mock_jira = _make_jira_mock()
+        mock_gh = AsyncMock()
+        mock_gh.get_pr.return_value = {
+            "head": {"sha": "abc123"},
+            "merged": False,
+        }
+        mock_gh.get_check_suites.side_effect = RuntimeError("GitHub API unavailable")
+        mock_gh.get_reviews.return_value = []
+
+        with (
+            patch("poller.watcher.JiraClient", return_value=mock_jira),
+            patch("poller.watcher.GitHubClient", return_value=mock_gh),
+            caplog.at_level(logging.DEBUG, logger="poller.watcher"),
+        ):
+            asyncio.run(watcher._poll("BUG-42"))
+
+        warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("CI check failed" in m for m in warning_messages), (
+            f"Expected WARNING about CI check failure, got: {caplog.records}"
+        )

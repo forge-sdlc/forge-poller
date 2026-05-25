@@ -118,9 +118,9 @@ class TicketWatcher:
             try:
                 gh = GitHubClient()
                 suites = await gh.get_check_suites(repo, head_sha)
-                result = check_suites_conclusion(suites)
-                if result:
-                    last_check_status, last_check_conclusion = result
+                # Do NOT capture CI conclusion as baseline — always leave as None so the
+                # first poll after registration fires even if CI already completed before
+                # the ticket was registered (or the poller was restarted).
                 last_completed_count = sum(1 for s in suites if s.get("status") == "completed")
                 reviews = await gh.get_reviews(repo, pr_number)
                 rev = latest_review(reviews)
@@ -277,38 +277,41 @@ class TicketWatcher:
             # GitHub marks a suite status="completed" only when ALL its child
             # check_runs are done. Checking the suite is authoritative; counting
             # individual check_runs is not because GitHub registers them lazily.
-            try:
-                suites = await gh.get_check_suites(repo, head_sha or "")
-                total_suites = len(suites)
-                new_completed_count = sum(1 for s in suites if s.get("status") == "completed")
-                result = check_suites_conclusion(suites)
-                if result:
-                    new_check_status, new_check_conclusion = result
-                    conclusion_changed = (new_check_status, new_check_conclusion) != (last_check_status, last_check_conclusion)
-                    if conclusion_changed:
-                        logger.info(
-                            f"{ticket_key}: CI all suites done — {new_check_conclusion} "
+            if head_sha:
+                try:
+                    suites = await gh.get_check_suites(repo, head_sha)
+                    total_suites = len(suites)
+                    new_completed_count = sum(1 for s in suites if s.get("status") == "completed")
+                    result = check_suites_conclusion(suites)
+                    if result:
+                        new_check_status, new_check_conclusion = result
+                        conclusion_changed = (new_check_status, new_check_conclusion) != (last_check_status, last_check_conclusion)
+                        if conclusion_changed:
+                            logger.info(
+                                f"{ticket_key}: CI all suites done — {new_check_conclusion} "
+                                f"({new_completed_count}/{total_suites} suites complete)"
+                            )
+                            await forwarder.forward_github(
+                                payloads.check_suite_completed(
+                                    repo=repo,
+                                    branch=branch or "",
+                                    pr_number=pr_number,
+                                    conclusion=new_check_conclusion,
+                                ),
+                                event_type="check_suite",
+                            )
+                            last_check_status = new_check_status
+                            last_check_conclusion = new_check_conclusion
+                    else:
+                        logger.debug(
+                            f"{ticket_key}: CI suites still running "
                             f"({new_completed_count}/{total_suites} suites complete)"
                         )
-                        await forwarder.forward_github(
-                            payloads.check_suite_completed(
-                                repo=repo,
-                                branch=branch or "",
-                                pr_number=pr_number,
-                                conclusion=new_check_conclusion,
-                            ),
-                            event_type="check_suite",
-                        )
-                        last_check_status = new_check_status
-                        last_check_conclusion = new_check_conclusion
-                else:
-                    logger.debug(
-                        f"{ticket_key}: CI suites still running "
-                        f"({new_completed_count}/{total_suites} suites complete)"
-                    )
-                last_completed_count = new_completed_count
-            except Exception as e:
-                logger.debug(f"CI check failed for {ticket_key}: {e}")
+                    last_completed_count = new_completed_count
+                except Exception as e:
+                    logger.warning(f"CI check failed for {ticket_key}: {e}")
+            else:
+                logger.debug(f"{ticket_key}: skipping CI check — head_sha not yet known")
 
             # Reviews
             try:
