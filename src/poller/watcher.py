@@ -222,6 +222,7 @@ class TicketWatcher:
                         body=body,
                         author_account_id=author.get("accountId", ""),
                         author_display_name=author.get("displayName", ""),
+                        author_email=author.get("emailAddress", ""),
                     )
                 )
 

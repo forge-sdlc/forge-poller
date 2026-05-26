@@ -42,6 +42,7 @@ def comment_created(
     body: str,
     author_account_id: str,
     author_display_name: str,
+    author_email: str = "",
 ) -> dict[str, Any]:
     return {
         "webhookEvent": "comment_created",
@@ -59,6 +60,7 @@ def comment_created(
             "author": {
                 "accountId": author_account_id,
                 "displayName": author_display_name,
+                "emailAddress": author_email,
             },
         },
         "user": {"accountId": author_account_id, "displayName": author_display_name},
