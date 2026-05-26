@@ -28,6 +28,10 @@ class Settings(BaseSettings):
         default="",
         description="Jira account ID of the Forge service account — comments from this account are ignored",
     )
+    forge_bot_github_login: str = Field(
+        default="",
+        description="GitHub login of the Forge bot — PR comments from this account are ignored",
+    )
     beta_invite_code: str = Field(
         default="",
         description="Shared invite code for beta access — leave empty to disable the check",

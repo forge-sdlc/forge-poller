@@ -353,21 +353,32 @@ class TicketWatcher:
             # PR comments (issue_comment events — needed for /forge skip-gate)
             try:
                 pr_comments = await gh.get_issue_comments(repo, pr_number)
-                newest = pr_comments[0] if pr_comments else None
-                if newest and newest.get("id") != state.last_pr_comment_id:
-                    sender = newest.get("user", {}).get("login", "")
-                    body = newest.get("body", "")
-                    logger.info(f"{ticket_key}: new PR comment by {sender}")
-                    await forwarder.forward_github(
-                        payloads.issue_comment(
-                            repo=repo,
-                            pr_number=pr_number,
-                            comment_body=body,
-                            sender_login=sender,
-                        ),
-                        event_type="issue_comment",
-                    )
-                    last_pr_comment_id = newest.get("id")
+                if pr_comments and pr_comments[0].get("id") != state.last_pr_comment_id:
+                    # Comments are sorted desc (newest first). Collect all new
+                    # ones, then forward in chronological order.
+                    new_comments = []
+                    for c in pr_comments:
+                        if c.get("id") == state.last_pr_comment_id:
+                            break
+                        new_comments.append(c)
+                    for c in reversed(new_comments):
+                        sender = c.get("user", {}).get("login", "")
+                        body = c.get("body", "")
+                        bot_login = get_settings().forge_bot_github_login
+                        if bot_login and sender == bot_login:
+                            logger.debug(f"{ticket_key}: skipping own PR comment")
+                            continue
+                        logger.info(f"{ticket_key}: new PR comment by {sender}")
+                        await forwarder.forward_github(
+                            payloads.issue_comment(
+                                repo=repo,
+                                pr_number=pr_number,
+                                comment_body=body,
+                                sender_login=sender,
+                            ),
+                            event_type="issue_comment",
+                        )
+                    last_pr_comment_id = pr_comments[0].get("id")
             except Exception as e:
                 logger.debug(f"PR comment check failed for {ticket_key}: {e}")
 
