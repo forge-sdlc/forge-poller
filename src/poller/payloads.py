@@ -113,6 +113,23 @@ def pr_review_submitted(
     }
 
 
+def issue_comment(
+    repo: str,
+    pr_number: int,
+    comment_body: str,
+    sender_login: str,
+) -> dict[str, Any]:
+    return {
+        "action": "created",
+        "issue": {"number": pr_number},
+        "comment": {
+            "body": comment_body,
+        },
+        "repository": {"full_name": repo},
+        "sender": {"login": sender_login},
+    }
+
+
 def pr_merged(
     repo: str,
     branch: str,

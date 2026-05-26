@@ -53,6 +53,7 @@ def _make_github_mock(suite_status="completed", suite_conclusion="failure", merg
         {"status": suite_status, "conclusion": suite_conclusion}
     ]
     mock.get_reviews.return_value = []
+    mock.get_issue_comments.return_value = []
     return mock
 
 
@@ -77,6 +78,7 @@ def _make_watched_state(
         last_check_conclusion=last_check_conclusion,
         last_completed_count=None,
         last_review_id=None,
+        last_pr_comment_id=None,
     )
 
 
@@ -167,6 +169,7 @@ class TestCiCheckExceptionLogLevel:
         }
         mock_gh.get_check_suites.side_effect = RuntimeError("GitHub API unavailable")
         mock_gh.get_reviews.return_value = []
+        mock_gh.get_issue_comments.return_value = []
 
         with (
             patch("poller.watcher.JiraClient", return_value=mock_jira),

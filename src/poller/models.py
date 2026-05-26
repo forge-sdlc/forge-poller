@@ -19,3 +19,4 @@ class TicketState:
     last_check_conclusion: str | None
     last_completed_count: int | None
     last_review_id: int | None
+    last_pr_comment_id: int | None = None

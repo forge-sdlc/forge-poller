@@ -113,6 +113,16 @@ class TicketWatcher:
         last_check_status = last_check_conclusion = None
         last_completed_count = None
         last_review_id = None
+        last_pr_comment_id = None
+
+        if repo and pr_number:
+            try:
+                gh = GitHubClient()
+                comments = await gh.get_issue_comments(repo, pr_number)
+                if comments:
+                    last_pr_comment_id = comments[0].get("id")
+            except Exception as e:
+                logger.debug(f"Could not fetch PR comments for {ticket_key}: {e}")
 
         if repo and head_sha:
             try:
@@ -146,6 +156,7 @@ class TicketWatcher:
             last_check_conclusion=last_check_conclusion,
             last_completed_count=last_completed_count,
             last_review_id=last_review_id,
+            last_pr_comment_id=last_pr_comment_id,
         )
 
     async def _sync_epics(self, feature_key: str) -> None:
@@ -249,6 +260,7 @@ class TicketWatcher:
         last_check_conclusion = state.last_check_conclusion
         last_completed_count = state.last_completed_count
         last_review_id = state.last_review_id
+        last_pr_comment_id = state.last_pr_comment_id
 
         if repo and pr_number:
             gh = GitHubClient()
@@ -338,6 +350,27 @@ class TicketWatcher:
             except Exception as e:
                 logger.debug(f"Review check failed for {ticket_key}: {e}")
 
+            # PR comments (issue_comment events — needed for /forge skip-gate)
+            try:
+                pr_comments = await gh.get_issue_comments(repo, pr_number)
+                newest = pr_comments[0] if pr_comments else None
+                if newest and newest.get("id") != state.last_pr_comment_id:
+                    sender = newest.get("user", {}).get("login", "")
+                    body = newest.get("body", "")
+                    logger.info(f"{ticket_key}: new PR comment by {sender}")
+                    await forwarder.forward_github(
+                        payloads.issue_comment(
+                            repo=repo,
+                            pr_number=pr_number,
+                            comment_body=body,
+                            sender_login=sender,
+                        ),
+                        event_type="issue_comment",
+                    )
+                    last_pr_comment_id = newest.get("id")
+            except Exception as e:
+                logger.debug(f"PR comment check failed for {ticket_key}: {e}")
+
         async with self._lock:
             if ticket_key in self._state:
                 self._state[ticket_key] = TicketState(
@@ -357,6 +390,7 @@ class TicketWatcher:
                     last_check_conclusion=last_check_conclusion,
                     last_completed_count=last_completed_count,
                     last_review_id=last_review_id,
+                    last_pr_comment_id=last_pr_comment_id,
                 )
         if self._state_file:
             save_state(self._state_file, self._state)

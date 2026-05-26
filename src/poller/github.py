@@ -38,6 +38,15 @@ class GitHubClient:
             r.raise_for_status()
             return r.json().get("check_suites", [])
 
+    async def get_issue_comments(self, repo: str, issue_number: int) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(headers=self._headers) as client:
+            r = await client.get(
+                f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments",
+                params={"per_page": 100, "sort": "created", "direction": "desc"},
+            )
+            r.raise_for_status()
+            return r.json()
+
     async def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(
