@@ -39,13 +39,16 @@ class GitHubClient:
             return r.json().get("check_suites", [])
 
     async def get_issue_comments(self, repo: str, issue_number: int) -> list[dict[str, Any]]:
+        """Fetch issue/PR comments, returned newest-first."""
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(
                 f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments",
-                params={"per_page": 100, "sort": "created", "direction": "desc"},
+                params={"per_page": 100},
             )
             r.raise_for_status()
-            return r.json()
+            comments = r.json()
+            comments.reverse()
+            return comments
 
     async def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(headers=self._headers) as client:

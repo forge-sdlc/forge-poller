@@ -380,7 +380,7 @@ class TicketWatcher:
                         )
                     last_pr_comment_id = pr_comments[0].get("id")
             except Exception as e:
-                logger.debug(f"PR comment check failed for {ticket_key}: {e}")
+                logger.warning(f"PR comment check failed for {ticket_key}: {e}")
 
         async with self._lock:
             if ticket_key in self._state:
