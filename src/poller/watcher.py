@@ -236,9 +236,9 @@ class TicketWatcher:
                         logger.info(
                             f"{ticket_key}: discovered PRD PR {prd_pr_repo}#{prd_pr_number}"
                         )
+                        break
                     except Exception as e:
                         logger.debug(f"PRD PR fetch failed for {ticket_key}: {e}")
-                    break
 
         # Polling: only when we have a live, unmerged PR
         if not prd_pr_number or prd_pr_merged:
