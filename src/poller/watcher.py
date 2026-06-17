@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 from poller import forwarder, payloads
 from poller.config import get_settings
@@ -9,6 +10,10 @@ from poller.models import TicketState
 from poller.persistence import load_state, save_state
 
 logger = logging.getLogger(__name__)
+
+_PRD_COMMENT_PATTERN = re.compile(
+    r"github\.com/([^/]+/[^/]+)/pull/(\d+)", re.IGNORECASE
+)
 
 
 class TicketWatcher:
@@ -182,6 +187,139 @@ class TicketWatcher:
         for key in watched_children - active_keys:
             logger.info(f"Auto-unwatching archived child {key} of {feature_key}")
             await self.remove(key)
+
+    async def _poll_prd_pr(
+        self,
+        ticket_key: str,
+        state: TicketState,
+        jira_comments: list[dict],
+    ) -> dict:
+        """Poll the PRD proposals PR for merge, reviews, and comments.
+
+        Returns a dict with updated prd_pr_* fields to be merged into the
+        reconstructed TicketState at the end of _poll().
+        """
+        prd_pr_repo = state.prd_pr_repo
+        prd_pr_number = state.prd_pr_number
+        prd_last_review_id = state.prd_last_review_id
+        prd_last_pr_comment_id = state.prd_last_pr_comment_id
+        prd_pr_merged = state.prd_pr_merged
+
+        def _result() -> dict:
+            return {
+                "prd_pr_repo": prd_pr_repo,
+                "prd_pr_number": prd_pr_number,
+                "prd_last_review_id": prd_last_review_id,
+                "prd_last_pr_comment_id": prd_last_pr_comment_id,
+                "prd_pr_merged": prd_pr_merged,
+            }
+
+        # Discovery: scan Jira comments for "PRD published for review: <url>"
+        if not prd_pr_number and not prd_pr_merged:
+            for comment in jira_comments:
+                body = _extract_comment_body(comment.get("body"))
+                m = _PRD_COMMENT_PATTERN.search(body)
+                if m:
+                    discovered_repo = m.group(1)
+                    discovered_number = int(m.group(2))
+                    gh = GitHubClient()
+                    try:
+                        pr = await gh.get_pr(discovered_repo, discovered_number)
+                        prd_pr_repo = discovered_repo
+                        prd_pr_number = discovered_number
+                        if pr.get("merged"):
+                            logger.info(
+                                f"{ticket_key}: PRD PR already merged at discovery — marking done"
+                            )
+                            prd_pr_merged = True
+                            return _result()
+                        logger.info(
+                            f"{ticket_key}: discovered PRD PR {prd_pr_repo}#{prd_pr_number}"
+                        )
+                    except Exception as e:
+                        logger.debug(f"PRD PR fetch failed for {ticket_key}: {e}")
+                    break
+
+        # Polling: only when we have a live, unmerged PR
+        if not prd_pr_number or prd_pr_merged:
+            return _result()
+
+        try:
+            gh = GitHubClient()
+            pr_data = await gh.get_pr(prd_pr_repo, prd_pr_number)
+
+            if pr_data.get("merged"):
+                logger.info(f"{ticket_key}: PRD PR merged")
+                await forwarder.forward_github(
+                    payloads.pr_merged(
+                        repo=prd_pr_repo,
+                        branch=pr_data.get("head", {}).get("ref", ""),
+                        pr_number=prd_pr_number,
+                        pr_title=pr_data.get("title", ""),
+                        pr_url=pr_data.get("html_url", ""),
+                    ),
+                    event_type="pull_request",
+                )
+                prd_pr_merged = True
+                return _result()
+
+            prd_branch = pr_data.get("head", {}).get("ref", "")
+            prd_title = pr_data.get("title", "")
+            prd_url = pr_data.get("html_url", "")
+
+            # Reviews
+            reviews = await gh.get_reviews(prd_pr_repo, prd_pr_number)
+            rev = latest_review(reviews)
+            if rev and rev.get("id") != prd_last_review_id:
+                reviewer = rev.get("user", {}).get("login", "")
+                logger.info(
+                    f"{ticket_key}: new PRD PR review by {reviewer} ({rev.get('state')})"
+                )
+                await forwarder.forward_github(
+                    payloads.pr_review_submitted(
+                        repo=prd_pr_repo,
+                        branch=prd_branch,
+                        pr_number=prd_pr_number,
+                        pr_title=prd_title,
+                        pr_url=prd_url,
+                        review_state=rev.get("state", ""),
+                        review_body=rev.get("body", "") or "",
+                        reviewer_login=reviewer,
+                    ),
+                    event_type="pull_request_review",
+                )
+                prd_last_review_id = rev.get("id")
+
+            # Comments (get_issue_comments returns newest-first)
+            pr_comments = await gh.get_issue_comments(prd_pr_repo, prd_pr_number)
+            if pr_comments and pr_comments[0].get("id") != prd_last_pr_comment_id:
+                new_comments = []
+                for c in pr_comments:
+                    if c.get("id") == prd_last_pr_comment_id:
+                        break
+                    new_comments.append(c)
+                for c in reversed(new_comments):
+                    sender = c.get("user", {}).get("login", "")
+                    bot_login = get_settings().forge_bot_github_login
+                    if bot_login and sender == bot_login:
+                        logger.debug(f"{ticket_key}: skipping bot comment on PRD PR")
+                        continue
+                    logger.info(f"{ticket_key}: new PRD PR comment by {sender}")
+                    await forwarder.forward_github(
+                        payloads.issue_comment(
+                            repo=prd_pr_repo,
+                            pr_number=prd_pr_number,
+                            comment_body=c.get("body", ""),
+                            sender_login=sender,
+                        ),
+                        event_type="issue_comment",
+                    )
+                prd_last_pr_comment_id = pr_comments[0].get("id")
+
+        except Exception as e:
+            logger.warning(f"PRD PR polling failed for {ticket_key}: {e}")
+
+        return _result()
 
     async def _poll(self, ticket_key: str) -> None:
         async with self._lock:

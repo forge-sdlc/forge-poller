@@ -66,3 +66,312 @@ class TestTicketStateFields:
         assert state.prd_last_review_id == 42
         assert state.prd_last_pr_comment_id == 101
         assert state.prd_pr_merged is True
+
+
+from poller.watcher import TicketWatcher
+
+
+def _make_state(**overrides) -> TicketState:
+    return _base_state(**overrides)
+
+
+class TestPrdPrDiscovery:
+
+    def test_discovers_prd_pr_from_jira_comment(self):
+        watcher = TicketWatcher()
+        state = _make_state()
+        jira_comments = [
+            {
+                "id": "10",
+                "body": "PRD published for review: https://github.com/eshulman2/enhancement-proposals/pull/5",
+                "author": {"accountId": "forgebot"},
+            }
+        ]
+        mock_pr = {
+            "merged": False,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "[AISOS-100] PRD: Test",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder"):
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                MockGH.return_value.get_reviews = AsyncMock(return_value=[])
+                MockGH.return_value.get_issue_comments = AsyncMock(return_value=[])
+                result = await watcher._poll_prd_pr("AISOS-100", state, jira_comments)
+            assert result["prd_pr_repo"] == "eshulman2/enhancement-proposals"
+            assert result["prd_pr_number"] == 5
+
+        asyncio.run(run())
+
+    def test_skips_discovery_when_already_merged(self):
+        watcher = TicketWatcher()
+        state = _make_state(prd_pr_merged=True)
+        jira_comments = [
+            {"id": "10", "body": "PRD published for review: https://github.com/owner/repo/pull/5"}
+        ]
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH:
+                result = await watcher._poll_prd_pr("AISOS-100", state, jira_comments)
+                MockGH.assert_not_called()
+            assert result["prd_pr_number"] is None
+            assert result["prd_pr_merged"] is True
+
+        asyncio.run(run())
+
+    def test_marks_merged_without_event_if_pr_already_merged_at_discovery(self):
+        watcher = TicketWatcher()
+        state = _make_state()
+        jira_comments = [
+            {"id": "10", "body": "PRD published for review: https://github.com/eshulman2/enhancement-proposals/pull/5"}
+        ]
+        mock_pr = {
+            "merged": True,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "PRD",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                mock_fwd.forward_github = AsyncMock()
+                result = await watcher._poll_prd_pr("AISOS-100", state, jira_comments)
+                mock_fwd.forward_github.assert_not_called()
+            assert result["prd_pr_merged"] is True
+
+        asyncio.run(run())
+
+
+class TestPrdPrMerge:
+
+    def test_forwards_merge_event_and_sets_merged_flag(self):
+        watcher = TicketWatcher()
+        state = _make_state(
+            prd_pr_repo="eshulman2/enhancement-proposals",
+            prd_pr_number=5,
+        )
+        mock_pr = {
+            "merged": True,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "[AISOS-100] PRD: Test Feature",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+        forwarded_events = []
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                mock_fwd.forward_github = AsyncMock(
+                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                )
+                result = await watcher._poll_prd_pr("AISOS-100", state, [])
+            assert "pull_request" in forwarded_events
+            assert result["prd_pr_merged"] is True
+
+        asyncio.run(run())
+
+    def test_does_not_forward_merge_event_when_already_marked_merged(self):
+        watcher = TicketWatcher()
+        state = _make_state(
+            prd_pr_repo="eshulman2/enhancement-proposals",
+            prd_pr_number=5,
+            prd_pr_merged=True,
+        )
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                mock_fwd.forward_github = AsyncMock()
+                await watcher._poll_prd_pr("AISOS-100", state, [])
+                MockGH.assert_not_called()
+                mock_fwd.forward_github.assert_not_called()
+
+        asyncio.run(run())
+
+
+class TestPrdPrReviews:
+
+    def test_forwards_new_review(self):
+        watcher = TicketWatcher()
+        state = _make_state(
+            prd_pr_repo="eshulman2/enhancement-proposals",
+            prd_pr_number=5,
+            prd_last_review_id=None,
+        )
+        mock_pr = {
+            "merged": False,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "[AISOS-100] PRD: Test",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+        mock_reviews = [
+            {
+                "id": 42,
+                "state": "CHANGES_REQUESTED",
+                "body": "Please add more detail.",
+                "submitted_at": "2026-06-17T10:00:00Z",
+                "user": {"login": "reviewer1"},
+            }
+        ]
+        forwarded_events = []
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                MockGH.return_value.get_reviews = AsyncMock(return_value=mock_reviews)
+                MockGH.return_value.get_issue_comments = AsyncMock(return_value=[])
+                mock_fwd.forward_github = AsyncMock(
+                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                )
+                result = await watcher._poll_prd_pr("AISOS-100", state, [])
+            assert "pull_request_review" in forwarded_events
+            assert result["prd_last_review_id"] == 42
+
+        asyncio.run(run())
+
+    def test_does_not_forward_already_seen_review(self):
+        watcher = TicketWatcher()
+        state = _make_state(
+            prd_pr_repo="eshulman2/enhancement-proposals",
+            prd_pr_number=5,
+            prd_last_review_id=42,
+        )
+        mock_pr = {
+            "merged": False,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "PRD",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+        mock_reviews = [
+            {
+                "id": 42,
+                "state": "CHANGES_REQUESTED",
+                "body": "Feedback",
+                "submitted_at": "2026-06-17T10:00:00Z",
+                "user": {"login": "reviewer1"},
+            }
+        ]
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                MockGH.return_value.get_reviews = AsyncMock(return_value=mock_reviews)
+                MockGH.return_value.get_issue_comments = AsyncMock(return_value=[])
+                mock_fwd.forward_github = AsyncMock()
+                await watcher._poll_prd_pr("AISOS-100", state, [])
+                mock_fwd.forward_github.assert_not_called()
+
+        asyncio.run(run())
+
+
+class TestPrdPrComments:
+
+    def test_forwards_new_comment(self):
+        watcher = TicketWatcher()
+        state = _make_state(
+            prd_pr_repo="eshulman2/enhancement-proposals",
+            prd_pr_number=5,
+            prd_last_pr_comment_id=None,
+        )
+        mock_pr = {
+            "merged": False,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "PRD",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+        # get_issue_comments returns newest-first
+        mock_comments = [
+            {"id": 101, "body": "Can we clarify section 3?", "user": {"login": "reviewer1"}},
+        ]
+        forwarded_events = []
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                MockGH.return_value.get_reviews = AsyncMock(return_value=[])
+                MockGH.return_value.get_issue_comments = AsyncMock(return_value=mock_comments)
+                mock_fwd.forward_github = AsyncMock(
+                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                )
+                result = await watcher._poll_prd_pr("AISOS-100", state, [])
+            assert "issue_comment" in forwarded_events
+            assert result["prd_last_pr_comment_id"] == 101
+
+        asyncio.run(run())
+
+    def test_skips_bot_comment(self):
+        watcher = TicketWatcher()
+        state = _make_state(
+            prd_pr_repo="eshulman2/enhancement-proposals",
+            prd_pr_number=5,
+            prd_last_pr_comment_id=None,
+        )
+        mock_pr = {
+            "merged": False,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "PRD",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+        mock_comments = [
+            {"id": 101, "body": "PRD has been revised.", "user": {"login": "forgeSmith-bot"}},
+        ]
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                MockGH.return_value.get_reviews = AsyncMock(return_value=[])
+                MockGH.return_value.get_issue_comments = AsyncMock(return_value=mock_comments)
+                mock_fwd.forward_github = AsyncMock()
+                await watcher._poll_prd_pr("AISOS-100", state, [])
+                mock_fwd.forward_github.assert_not_called()
+
+        asyncio.run(run())
+
+    def test_forwards_multiple_new_comments_in_chronological_order(self):
+        watcher = TicketWatcher()
+        state = _make_state(
+            prd_pr_repo="eshulman2/enhancement-proposals",
+            prd_pr_number=5,
+            prd_last_pr_comment_id=100,
+        )
+        mock_pr = {
+            "merged": False,
+            "head": {"ref": "forge/prd/aisos-100"},
+            "title": "PRD",
+            "html_url": "https://github.com/eshulman2/enhancement-proposals/pull/5",
+        }
+        # newest-first (as returned by get_issue_comments)
+        mock_comments = [
+            {"id": 103, "body": "Third comment", "user": {"login": "reviewer1"}},
+            {"id": 102, "body": "Second comment", "user": {"login": "reviewer1"}},
+            {"id": 101, "body": "First comment", "user": {"login": "reviewer1"}},
+            {"id": 100, "body": "Already seen", "user": {"login": "reviewer1"}},
+        ]
+        forwarded_bodies = []
+
+        async def capture_forward(payload, event_type):
+            forwarded_bodies.append(payload["comment"]["body"])
+
+        async def run():
+            with patch("poller.watcher.GitHubClient") as MockGH, \
+                 patch("poller.watcher.forwarder") as mock_fwd:
+                MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
+                MockGH.return_value.get_reviews = AsyncMock(return_value=[])
+                MockGH.return_value.get_issue_comments = AsyncMock(return_value=mock_comments)
+                mock_fwd.forward_github = AsyncMock(side_effect=capture_forward)
+                result = await watcher._poll_prd_pr("AISOS-100", state, [])
+
+            assert forwarded_bodies == ["First comment", "Second comment", "Third comment"]
+            assert result["prd_last_pr_comment_id"] == 103
+
+        asyncio.run(run())
