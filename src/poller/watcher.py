@@ -520,6 +520,11 @@ class TicketWatcher:
             except Exception as e:
                 logger.warning(f"PR comment check failed for {ticket_key}: {e}")
 
+        prd_updates: dict = {}
+        if state.issue_type in ("Feature", "Story"):
+            prd_updates = await self._poll_prd_pr(ticket_key, state, comments)
+            await self._sync_epics(ticket_key)
+
         async with self._lock:
             if ticket_key in self._state:
                 self._state[ticket_key] = TicketState(
@@ -540,12 +545,14 @@ class TicketWatcher:
                     last_completed_count=last_completed_count,
                     last_review_id=last_review_id,
                     last_pr_comment_id=last_pr_comment_id,
+                    prd_pr_repo=prd_updates.get("prd_pr_repo", state.prd_pr_repo),
+                    prd_pr_number=prd_updates.get("prd_pr_number", state.prd_pr_number),
+                    prd_last_review_id=prd_updates.get("prd_last_review_id", state.prd_last_review_id),
+                    prd_last_pr_comment_id=prd_updates.get("prd_last_pr_comment_id", state.prd_last_pr_comment_id),
+                    prd_pr_merged=prd_updates.get("prd_pr_merged", state.prd_pr_merged),
                 )
         if self._state_file:
             save_state(self._state_file, self._state)
-
-        if state.issue_type in ("Feature", "Story"):
-            await self._sync_epics(ticket_key)
 
 
 def _extract_comment_body(body: object) -> str:

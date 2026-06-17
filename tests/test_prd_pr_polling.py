@@ -71,7 +71,8 @@ class TestTicketStateFields:
 from poller.watcher import TicketWatcher
 
 
-def _make_state(**overrides) -> TicketState:
+def _make_state(ticket_key: str = "AISOS-100", **overrides) -> TicketState:
+    overrides.setdefault("ticket_key", ticket_key)
     return _base_state(**overrides)
 
 
@@ -375,3 +376,109 @@ class TestPrdPrComments:
             assert result["prd_last_pr_comment_id"] == 103
 
         asyncio.run(run())
+
+
+class TestPollIntegration:
+
+    def test_poll_feature_calls_poll_prd_pr(self, monkeypatch):
+        watcher = TicketWatcher()
+        watcher._state = {"AISOS-100": _make_state()}
+        called_with = []
+
+        async def mock_poll_prd_pr(ticket_key, state, comments):
+            called_with.append(ticket_key)
+            return {
+                "prd_pr_repo": None, "prd_pr_number": None,
+                "prd_last_review_id": None, "prd_last_pr_comment_id": None,
+                "prd_pr_merged": False,
+            }
+
+        async def mock_sync_epics(feature_key):
+            pass
+
+        monkeypatch.setattr(watcher, "_poll_prd_pr", mock_poll_prd_pr)
+        monkeypatch.setattr(watcher, "_sync_epics", mock_sync_epics)
+
+        jira_response = {
+            "fields": {
+                "labels": ["forge:managed", "forge:prd-pending"],
+                "status": {"name": "In Progress"},
+                "summary": "Feature",
+                "comment": {"comments": []},
+                "issuetype": {"name": "Feature"},
+            }
+        }
+
+        with patch("poller.watcher.JiraClient") as MockJira:
+            MockJira.return_value.get_issue = AsyncMock(return_value=jira_response)
+            MockJira.return_value.get_remote_links = AsyncMock(return_value=[])
+            asyncio.run(watcher._poll("AISOS-100"))
+
+        assert called_with == ["AISOS-100"]
+
+    def test_poll_epic_does_not_call_poll_prd_pr(self, monkeypatch):
+        watcher = TicketWatcher()
+        watcher._state = {"AISOS-200": _make_state("AISOS-200", issue_type="Epic")}
+        called = []
+
+        async def mock_poll_prd_pr(ticket_key, state, comments):
+            called.append(ticket_key)
+            return {}
+
+        monkeypatch.setattr(watcher, "_poll_prd_pr", mock_poll_prd_pr)
+
+        jira_response = {
+            "fields": {
+                "labels": ["forge:managed"],
+                "status": {"name": "In Progress"},
+                "summary": "Epic",
+                "comment": {"comments": []},
+                "issuetype": {"name": "Epic"},
+            }
+        }
+
+        with patch("poller.watcher.JiraClient") as MockJira:
+            MockJira.return_value.get_issue = AsyncMock(return_value=jira_response)
+            MockJira.return_value.get_remote_links = AsyncMock(return_value=[])
+            asyncio.run(watcher._poll("AISOS-200"))
+
+        assert called == []
+
+    def test_prd_state_from_poll_prd_pr_is_persisted(self, monkeypatch):
+        watcher = TicketWatcher()
+        watcher._state = {"AISOS-100": _make_state()}
+
+        async def mock_poll_prd_pr(ticket_key, state, comments):
+            return {
+                "prd_pr_repo": "eshulman2/enhancement-proposals",
+                "prd_pr_number": 5,
+                "prd_last_review_id": None,
+                "prd_last_pr_comment_id": None,
+                "prd_pr_merged": False,
+            }
+
+        async def mock_sync_epics(feature_key):
+            pass
+
+        monkeypatch.setattr(watcher, "_poll_prd_pr", mock_poll_prd_pr)
+        monkeypatch.setattr(watcher, "_sync_epics", mock_sync_epics)
+
+        jira_response = {
+            "fields": {
+                "labels": ["forge:managed", "forge:prd-pending"],
+                "status": {"name": "In Progress"},
+                "summary": "Feature",
+                "comment": {"comments": []},
+                "issuetype": {"name": "Feature"},
+            }
+        }
+
+        with patch("poller.watcher.JiraClient") as MockJira:
+            MockJira.return_value.get_issue = AsyncMock(return_value=jira_response)
+            MockJira.return_value.get_remote_links = AsyncMock(return_value=[])
+            asyncio.run(watcher._poll("AISOS-100"))
+
+        saved = watcher._state["AISOS-100"]
+        assert saved.prd_pr_repo == "eshulman2/enhancement-proposals"
+        assert saved.prd_pr_number == 5
+        assert saved.prd_pr_merged is False
