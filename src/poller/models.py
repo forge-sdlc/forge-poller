@@ -20,3 +20,9 @@ class TicketState:
     last_completed_count: int | None
     last_review_id: int | None
     last_pr_comment_id: int | None = None
+    # PRD proposals PR tracking
+    prd_pr_repo: str | None = None
+    prd_pr_number: int | None = None
+    prd_last_review_id: int | None = None
+    prd_last_pr_comment_id: int | None = None
+    prd_pr_merged: bool = False
