@@ -51,7 +51,9 @@ def configure() -> int:
     return 0
 
 
-def register(ticket_ids: list[str], base_url: str, code: str) -> int:
+def register(ticket_ids: str | list[str], base_url: str, code: str) -> int:
+    if isinstance(ticket_ids, str):
+        ticket_ids = [ticket_ids]
     ticket_ids = [t.upper() for t in ticket_ids]
     resp = httpx.post(
         f"{base_url}/watch",
@@ -66,7 +68,7 @@ def register(ticket_ids: list[str], base_url: str, code: str) -> int:
         return 0
     if resp.status_code == 403:
         print(
-            "Wrong invite code.\n"
+            "Wrong password.\n"
             "Forge is running on an exclusive beta right now — please ask to join on #forge-sdlc"
         )
         return 1

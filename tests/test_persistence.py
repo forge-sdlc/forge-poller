@@ -1,4 +1,3 @@
-import pytest
 from poller.models import TicketState
 from poller.persistence import load_state, save_state
 
@@ -102,3 +101,17 @@ def test_save_multiple_tickets(tmp_path):
     save_state(path, states)
     reloaded = load_state(path)
     assert set(reloaded.keys()) == {"AISOS-1", "AISOS-2"}
+
+
+def test_load_ignores_unknown_future_fields(tmp_path):
+    path = tmp_path / "state.json"
+    state = _make_state("AISOS-1")
+    save_state(str(path), {"AISOS-1": state})
+
+    raw = path.read_text()
+    raw = raw.replace('"ticket_key": "AISOS-1"', '"ticket_key": "AISOS-1", "future": true')
+    path.write_text(raw)
+
+    reloaded = load_state(str(path))
+
+    assert reloaded["AISOS-1"].ticket_key == "AISOS-1"

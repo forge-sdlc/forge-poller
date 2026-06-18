@@ -26,3 +26,7 @@ class TicketState:
     prd_last_review_id: int | None = None
     prd_last_pr_comment_id: int | None = None
     prd_pr_merged: bool = False
+    poll_interval_seconds: int | None = None
+    last_polled_at: float | None = None
+    next_poll_at: float | None = None
+    failure_count: int = 0

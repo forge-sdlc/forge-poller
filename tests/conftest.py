@@ -8,3 +8,4 @@ def pytest_configure(config):
     os.environ.setdefault("JIRA_USER_EMAIL", "test@example.com")
     os.environ.setdefault("JIRA_API_TOKEN", "token")
     os.environ.setdefault("GITHUB_TOKEN", "ghtoken")
+    os.environ.setdefault("POLLER_STATE_FILE", "")

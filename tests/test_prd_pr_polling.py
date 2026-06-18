@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import poller.config as config_module
 from poller.models import TicketState
+from poller.watcher import TicketWatcher
 
 
 @pytest.fixture(autouse=True)
@@ -66,9 +67,6 @@ class TestTicketStateFields:
         assert state.prd_last_review_id == 42
         assert state.prd_last_pr_comment_id == 101
         assert state.prd_pr_merged is True
-
-
-from poller.watcher import TicketWatcher
 
 
 def _make_state(ticket_key: str = "AISOS-100", **overrides) -> TicketState:

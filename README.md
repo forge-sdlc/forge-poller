@@ -42,10 +42,17 @@ JIRA_API_TOKEN=your-jira-api-token
 GITHUB_TOKEN=your-github-token
 
 FORGE_GATEWAY_URL=http://localhost:8000   # where Forge is running
-POLL_INTERVAL=30                          # seconds between polls
+POLL_INTERVAL=30                          # base seconds between polls
+POLLER_MAX_CONCURRENCY=8                  # tickets checked at the same time
+POLLER_MAX_POLL_INTERVAL=300              # max adaptive backoff in seconds
+POLLER_JITTER_RATIO=0.2                   # spreads polls to avoid bursts
 ```
 
-Set `POLL_INTERVAL` lower (e.g. `10`) for faster iteration, higher for quieter logs.
+The poller uses a single-process async scheduler. Newly watched and active PR
+tickets are checked close to `POLL_INTERVAL`; quieter ticket states and failures
+back off up to `POLLER_MAX_POLL_INTERVAL`. `POLLER_MAX_CONCURRENCY` bounds
+Jira/GitHub load, and jitter avoids checking every watched ticket at the same
+instant.
 
 ### Beta access (optional)
 
@@ -120,7 +127,8 @@ curl http://localhost:8001/watch
 curl -X DELETE http://localhost:8001/watch/AISOS-123
 ```
 
-Tickets are also automatically removed when their PR is merged.
+Tickets are also automatically removed when their PR is merged or when Jira adds
+an `archived` / `forge:archived` label.
 
 ## Typical Development Workflow
 

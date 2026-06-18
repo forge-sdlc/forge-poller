@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 from poller.models import TicketState
 
@@ -17,6 +17,8 @@ def _to_dict(state: TicketState) -> dict:
 def _from_dict(d: dict) -> TicketState:
     data = dict(d)
     data["labels"] = set(data.get("labels", []))
+    valid_fields = {f.name for f in fields(TicketState)}
+    data = {key: value for key, value in data.items() if key in valid_fields}
     return TicketState(**data)
 
 

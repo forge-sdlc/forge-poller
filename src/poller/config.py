@@ -22,7 +22,23 @@ class Settings(BaseSettings):
     )
     poll_interval: int = Field(
         default=30,
-        description="Polling interval in seconds",
+        description="Base polling interval in seconds",
+    )
+    poller_max_concurrency: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum number of tickets to poll concurrently",
+    )
+    poller_max_poll_interval: int = Field(
+        default=300,
+        ge=1,
+        description="Maximum adaptive polling interval in seconds",
+    )
+    poller_jitter_ratio: float = Field(
+        default=0.2,
+        ge=0,
+        le=1,
+        description="Random jitter ratio applied when rescheduling tickets",
     )
     forge_bot_account_id: str = Field(
         default="",

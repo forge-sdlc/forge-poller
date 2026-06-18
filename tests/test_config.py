@@ -31,3 +31,15 @@ def test_poller_state_file_reads_from_env(monkeypatch):
     monkeypatch.setenv("POLLER_STATE_FILE", "/tmp/state.json")
     settings = config_module.Settings()
     assert settings.poller_state_file == "/tmp/state.json"
+
+
+def test_scheduler_settings_read_from_env(monkeypatch):
+    monkeypatch.setenv("POLLER_MAX_CONCURRENCY", "3")
+    monkeypatch.setenv("POLLER_MAX_POLL_INTERVAL", "120")
+    monkeypatch.setenv("POLLER_JITTER_RATIO", "0")
+
+    settings = config_module.Settings()
+
+    assert settings.poller_max_concurrency == 3
+    assert settings.poller_max_poll_interval == 120
+    assert settings.poller_jitter_ratio == 0
