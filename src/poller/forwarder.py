@@ -16,7 +16,9 @@ async def forward_jira(payload: dict[str, Any]) -> None:
     if r.is_success:
         logger.info(f"Forwarded Jira event to Forge: {r.status_code}")
     else:
-        logger.warning(f"Forge rejected Jira event: {r.status_code} {r.text}")
+        raise RuntimeError(
+            f"Forge rejected Jira event: {r.status_code} {r.text}"
+        )
 
 
 async def forward_github(payload: dict[str, Any], event_type: str) -> None:
@@ -32,4 +34,6 @@ async def forward_github(payload: dict[str, Any], event_type: str) -> None:
     if r.is_success:
         logger.info(f"Forwarded GitHub {event_type} event to Forge: {r.status_code}")
     else:
-        logger.warning(f"Forge rejected GitHub event: {r.status_code} {r.text}")
+        raise RuntimeError(
+            f"Forge rejected GitHub {event_type} event: {r.status_code} {r.text}"
+        )
