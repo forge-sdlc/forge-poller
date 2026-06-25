@@ -68,7 +68,7 @@ class TicketWatcher:
             save_state(self._state_file, self._state)
         return True
 
-    def list(self) -> list[dict]:
+    def list_tickets(self) -> list[dict]:
         def _entry(s: TicketState, children: list[dict] | None = None) -> dict:
             return {
                 "ticket_key": s.ticket_key,
