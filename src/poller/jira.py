@@ -54,13 +54,16 @@ class JiraClient:
             return [issue["key"] for issue in r.json().get("issues", [])]
 
 
-def extract_pr_info(remote_links: list[dict[str, Any]]) -> tuple[str, int, str] | None:
-    """Return (owner/repo, pr_number, branch) from Jira remote links, or None."""
+def extract_pr_info(remote_links: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    """Return all (owner/repo, pr_number) pairs from Jira remote links."""
+    results: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
     for link in remote_links:
         url = link.get("object", {}).get("url", "")
         m = _GITHUB_PR_PATTERN.search(url)
         if m:
-            repo = m.group(1)
-            pr_number = int(m.group(2))
-            return repo, pr_number, ""
-    return None
+            key = (m.group(1), int(m.group(2)))
+            if key not in seen:
+                seen.add(key)
+                results.append(key)
+    return results

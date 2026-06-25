@@ -9,13 +9,16 @@ from poller import forwarder, payloads
 from poller.config import get_settings
 from poller.github import GitHubClient, check_suites_conclusion, latest_review
 from poller.jira import JiraClient, extract_pr_info
-from poller.models import TicketState
+from poller.models import PrState, TicketState
 from poller.persistence import load_state, save_state
 
 logger = logging.getLogger(__name__)
 
 _PRD_COMMENT_PATTERN = re.compile(
     r"github\.com/([^/]+/[^/]+)/pull/(\d+)", re.IGNORECASE
+)
+_SPEC_PUBLICATION_PATTERN = re.compile(
+    r"\b(?:spec|specification)\s+published\s+for\s+review\b", re.IGNORECASE
 )
 _ARCHIVED_LABELS = {"archived", "forge:archived"}
 
@@ -71,7 +74,7 @@ class TicketWatcher:
                 "ticket_key": s.ticket_key,
                 "issue_type": s.issue_type,
                 "labels": sorted(s.labels),
-                "pr": f"{s.repo}#{s.pr_number}" if s.pr_number else None,
+                "prs": [f"{pr.repo}#{pr.pr_number}" for pr in s.prs],
                 "last_polled_at": s.last_polled_at,
                 "next_poll_at": s.next_poll_at,
                 "poll_interval_seconds": s.poll_interval_seconds,
@@ -199,12 +202,16 @@ class TicketWatcher:
         base = max(1, settings.poll_interval)
         maximum = max(base, settings.poller_max_poll_interval)
 
-        if state.repo and state.pr_number:
-            if state.last_check_conclusion is None:
+        active_prs = [pr for pr in state.prs if not pr.merged]
+        if active_prs:
+            if any(pr.last_check_conclusion is None for pr in active_prs):
                 return base
             return min(maximum, base * 2)
 
         if state.prd_pr_number and not state.prd_pr_merged:
+            return base
+
+        if state.spec_pr_number and not state.spec_pr_merged:
             return base
 
         if state.issue_type in ("Feature", "Story"):
@@ -238,49 +245,42 @@ class TicketWatcher:
         status = fields.get("status", {}).get("name", "")
         summary = fields.get("summary", "")
 
-        repo = pr_number = branch = head_sha = pr_title = pr_url = None
+        prs: list[PrState] = []
         try:
             remote_links = await jira.get_remote_links(ticket_key)
-            info = extract_pr_info(remote_links)
-            if info:
-                repo, pr_number, _ = info
-                gh = GitHubClient()
-                pr = await gh.get_pr(repo, pr_number)
-                branch = pr.get("head", {}).get("ref", "")
-                head_sha = pr.get("head", {}).get("sha", "")
-                pr_title = pr.get("title", "")
-                pr_url = pr.get("html_url", "")
+            pr_infos = extract_pr_info(remote_links)
+            gh = GitHubClient()
+            for repo, pr_number in pr_infos:
+                try:
+                    pr = await gh.get_pr(repo, pr_number)
+                    pr_state = PrState(
+                        repo=repo,
+                        pr_number=pr_number,
+                        branch=pr.get("head", {}).get("ref", ""),
+                        head_sha=pr.get("head", {}).get("sha", ""),
+                        pr_title=pr.get("title", ""),
+                        pr_url=pr.get("html_url", ""),
+                    )
+                    try:
+                        pr_comments = await gh.get_issue_comments(repo, pr_number)
+                        if pr_comments:
+                            pr_state.last_pr_comment_id = pr_comments[0].get("id")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch PR comments for {ticket_key} {repo}#{pr_number}: {e}")
+                    try:
+                        suites = await gh.get_check_suites(repo, pr_state.head_sha)
+                        pr_state.last_completed_count = sum(1 for s in suites if s.get("status") == "completed")
+                        reviews = await gh.get_reviews(repo, pr_number)
+                        rev = latest_review(reviews)
+                        if rev:
+                            pr_state.last_review_id = rev.get("id")
+                    except Exception as e:
+                        logger.debug(f"Could not fetch GitHub state for {ticket_key} {repo}#{pr_number}: {e}")
+                    prs.append(pr_state)
+                except Exception as e:
+                    logger.debug(f"Could not fetch PR {repo}#{pr_number} for {ticket_key}: {e}")
         except Exception as e:
             logger.debug(f"Could not fetch PR info for {ticket_key}: {e}")
-
-        last_check_status = last_check_conclusion = None
-        last_completed_count = None
-        last_review_id = None
-        last_pr_comment_id = None
-
-        if repo and pr_number:
-            try:
-                gh = GitHubClient()
-                comments = await gh.get_issue_comments(repo, pr_number)
-                if comments:
-                    last_pr_comment_id = comments[0].get("id")
-            except Exception as e:
-                logger.debug(f"Could not fetch PR comments for {ticket_key}: {e}")
-
-        if repo and head_sha:
-            try:
-                gh = GitHubClient()
-                suites = await gh.get_check_suites(repo, head_sha)
-                # Do NOT capture CI conclusion as baseline — always leave as None so the
-                # first poll after registration fires even if CI already completed before
-                # the ticket was registered (or the poller was restarted).
-                last_completed_count = sum(1 for s in suites if s.get("status") == "completed")
-                reviews = await gh.get_reviews(repo, pr_number)
-                rev = latest_review(reviews)
-                if rev:
-                    last_review_id = rev.get("id")
-            except Exception as e:
-                logger.debug(f"Could not fetch GitHub state for {ticket_key}: {e}")
 
         return TicketState(
             ticket_key=ticket_key,
@@ -289,17 +289,7 @@ class TicketWatcher:
             summary=summary,
             labels=labels,
             last_comment_id=last_comment_id,
-            repo=repo,
-            pr_number=pr_number,
-            branch=branch,
-            head_sha=head_sha,
-            pr_title=pr_title,
-            pr_url=pr_url,
-            last_check_status=last_check_status,
-            last_check_conclusion=last_check_conclusion,
-            last_completed_count=last_completed_count,
-            last_review_id=last_review_id,
-            last_pr_comment_id=last_pr_comment_id,
+            prs=prs,
         )
 
     async def _sync_epics(self, feature_key: str) -> None:
@@ -459,6 +449,143 @@ class TicketWatcher:
 
         return _result()
 
+    async def _poll_spec_pr(
+        self,
+        ticket_key: str,
+        state: TicketState,
+        jira_comments: list[dict],
+        prd_updates: dict | None = None,
+    ) -> dict:
+        """Poll the spec proposals PR for merge, reviews, and comments."""
+        spec_pr_repo = state.spec_pr_repo
+        spec_pr_number = state.spec_pr_number
+        spec_last_review_id = state.spec_last_review_id
+        spec_last_pr_comment_id = state.spec_last_pr_comment_id
+        spec_pr_merged = state.spec_pr_merged
+
+        def _result() -> dict:
+            return {
+                "spec_pr_repo": spec_pr_repo,
+                "spec_pr_number": spec_pr_number,
+                "spec_last_review_id": spec_last_review_id,
+                "spec_last_pr_comment_id": spec_last_pr_comment_id,
+                "spec_pr_merged": spec_pr_merged,
+            }
+
+        if not spec_pr_number and not spec_pr_merged:
+            prd_repo = (prd_updates or {}).get("prd_pr_repo", state.prd_pr_repo)
+            prd_number = (prd_updates or {}).get("prd_pr_number", state.prd_pr_number)
+            for comment in jira_comments:
+                body = _extract_comment_body(comment.get("body"))
+                if not _SPEC_PUBLICATION_PATTERN.search(body):
+                    continue
+                for m in _PRD_COMMENT_PATTERN.finditer(body):
+                    discovered_repo = m.group(1)
+                    discovered_number = int(m.group(2))
+                    if (
+                        discovered_repo == prd_repo
+                        and discovered_number == prd_number
+                    ):
+                        continue
+                    gh = GitHubClient()
+                    try:
+                        pr = await gh.get_pr(discovered_repo, discovered_number)
+                        spec_pr_repo = discovered_repo
+                        spec_pr_number = discovered_number
+                        if pr.get("merged"):
+                            logger.info(
+                                f"{ticket_key}: spec PR already merged at discovery — marking done"
+                            )
+                            spec_pr_merged = True
+                            return _result()
+                        logger.info(
+                            f"{ticket_key}: discovered spec PR {spec_pr_repo}#{spec_pr_number}"
+                        )
+                        break
+                    except Exception as e:
+                        logger.debug(f"Spec PR fetch failed for {ticket_key}: {e}")
+                else:
+                    continue
+                break
+
+        if not spec_pr_number or spec_pr_merged:
+            return _result()
+
+        try:
+            gh = GitHubClient()
+            pr_data = await gh.get_pr(spec_pr_repo, spec_pr_number)
+
+            if pr_data.get("merged"):
+                logger.info(f"{ticket_key}: spec PR merged")
+                await forwarder.forward_github(
+                    payloads.pr_merged(
+                        repo=spec_pr_repo,
+                        branch=pr_data.get("head", {}).get("ref", ""),
+                        pr_number=spec_pr_number,
+                        pr_title=pr_data.get("title", ""),
+                        pr_url=pr_data.get("html_url", ""),
+                    ),
+                    event_type="pull_request",
+                )
+                spec_pr_merged = True
+                return _result()
+
+            spec_branch = pr_data.get("head", {}).get("ref", "")
+            spec_title = pr_data.get("title", "")
+            spec_url = pr_data.get("html_url", "")
+
+            reviews = await gh.get_reviews(spec_pr_repo, spec_pr_number)
+            rev = latest_review(reviews)
+            if rev and rev.get("id") != spec_last_review_id:
+                reviewer = rev.get("user", {}).get("login", "")
+                logger.info(
+                    f"{ticket_key}: new spec PR review by {reviewer} ({rev.get('state')})"
+                )
+                await forwarder.forward_github(
+                    payloads.pr_review_submitted(
+                        repo=spec_pr_repo,
+                        branch=spec_branch,
+                        pr_number=spec_pr_number,
+                        pr_title=spec_title,
+                        pr_url=spec_url,
+                        review_state=rev.get("state", ""),
+                        review_body=rev.get("body", "") or "",
+                        reviewer_login=reviewer,
+                    ),
+                    event_type="pull_request_review",
+                )
+                spec_last_review_id = rev.get("id")
+
+            pr_comments = await gh.get_issue_comments(spec_pr_repo, spec_pr_number)
+            if pr_comments and pr_comments[0].get("id") != spec_last_pr_comment_id:
+                new_comments = []
+                for c in pr_comments:
+                    if c.get("id") == spec_last_pr_comment_id:
+                        break
+                    new_comments.append(c)
+                for c in reversed(new_comments):
+                    sender = c.get("user", {}).get("login", "")
+                    bot_login = get_settings().forge_bot_github_login
+                    if bot_login and sender == bot_login:
+                        logger.debug(f"{ticket_key}: skipping bot comment on spec PR")
+                        continue
+                    logger.info(f"{ticket_key}: new spec PR comment by {sender}")
+                    await forwarder.forward_github(
+                        payloads.issue_comment(
+                            repo=spec_pr_repo,
+                            pr_number=spec_pr_number,
+                            comment_body=c.get("body", ""),
+                            sender_login=sender,
+                        ),
+                        event_type="issue_comment",
+                    )
+                spec_last_pr_comment_id = pr_comments[0].get("id")
+
+        except Exception as e:
+            logger.warning(f"Spec PR polling failed for {ticket_key}: {e}")
+
+        return _result()
+
     async def _poll(self, ticket_key: str) -> None:
         async with self._lock:
             if ticket_key not in self._state:
@@ -518,128 +645,139 @@ class TicketWatcher:
                     )
                 )
 
-        # Discover PR if not yet known
-        repo, pr_number, branch = state.repo, state.pr_number, state.branch
-        head_sha, pr_title, pr_url = state.head_sha, state.pr_title, state.pr_url
-        if not pr_number:
-            try:
-                remote_links = await jira.get_remote_links(ticket_key)
-                info = extract_pr_info(remote_links)
-                if info:
-                    repo, pr_number, _ = info
-                    gh = GitHubClient()
-                    pr = await gh.get_pr(repo, pr_number)
-                    branch = pr.get("head", {}).get("ref", "")
-                    head_sha = pr.get("head", {}).get("sha", "")
-                    pr_title = pr.get("title", "")
-                    pr_url = pr.get("html_url", "")
-                    logger.info(f"{ticket_key}: discovered PR {repo}#{pr_number}")
-            except Exception as e:
-                logger.debug(f"PR discovery failed for {ticket_key}: {e}")
+        # Discover new PRs from remote links
+        prs = list(state.prs)
+        existing_pr_keys = {(pr.repo, pr.pr_number) for pr in prs}
+        try:
+            remote_links = await jira.get_remote_links(ticket_key)
+            pr_infos = extract_pr_info(remote_links)
+            gh = GitHubClient()
+            for repo, pr_number in pr_infos:
+                if (repo, pr_number) not in existing_pr_keys:
+                    try:
+                        pr = await gh.get_pr(repo, pr_number)
+                        prs.append(PrState(
+                            repo=repo,
+                            pr_number=pr_number,
+                            branch=pr.get("head", {}).get("ref", ""),
+                            head_sha=pr.get("head", {}).get("sha", ""),
+                            pr_title=pr.get("title", ""),
+                            pr_url=pr.get("html_url", ""),
+                        ))
+                        logger.info(f"{ticket_key}: discovered PR {repo}#{pr_number}")
+                    except Exception as e:
+                        logger.debug(f"PR discovery failed for {ticket_key} {repo}#{pr_number}: {e}")
+        except Exception as e:
+            logger.debug(f"PR discovery failed for {ticket_key}: {e}")
 
-        last_check_status = state.last_check_status
-        last_check_conclusion = state.last_check_conclusion
-        last_completed_count = state.last_completed_count
-        last_review_id = state.last_review_id
-        last_pr_comment_id = state.last_pr_comment_id
+        # Poll each PR
+        all_merged = len(prs) > 0
+        for pr in prs:
+            if pr.merged:
+                continue
 
-        if repo and pr_number:
             gh = GitHubClient()
 
-            # Check merged — also refresh head_sha in case new commits were pushed
+            # Check merged — also refresh head_sha
             try:
-                pr_data = await gh.get_pr(repo, pr_number)
-                head_sha = pr_data.get("head", {}).get("sha", head_sha)
+                pr_data = await gh.get_pr(pr.repo, pr.pr_number)
+                previous_head_sha = pr.head_sha
+                pr.head_sha = pr_data.get("head", {}).get("sha", pr.head_sha)
+                if pr.head_sha != previous_head_sha:
+                    pr.last_check_status = None
+                    pr.last_check_conclusion = None
                 if pr_data.get("merged"):
-                    logger.info(f"{ticket_key}: PR merged")
+                    logger.info(f"{ticket_key}: PR {pr.repo}#{pr.pr_number} merged")
                     await forwarder.forward_github(
                         payloads.pr_merged(
-                            repo=repo,
-                            branch=branch or "",
-                            pr_number=pr_number,
-                            pr_title=pr_title or "",
-                            pr_url=pr_url or "",
+                            repo=pr.repo,
+                            branch=pr.branch or "",
+                            pr_number=pr.pr_number,
+                            pr_title=pr.pr_title or "",
+                            pr_url=pr.pr_url or "",
                         ),
                         event_type="pull_request",
                     )
-                    await self.remove(ticket_key)
-                    return
+                    pr.merged = True
+                    continue
             except Exception as e:
-                logger.debug(f"PR merge check failed for {ticket_key}: {e}")
+                logger.debug(f"PR merge check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
 
-            # CI status — use check_suites, not individual check_runs.
-            # GitHub marks a suite status="completed" only when ALL its child
-            # check_runs are done. Checking the suite is authoritative; counting
-            # individual check_runs is not because GitHub registers them lazily.
-            if head_sha:
+            all_merged = False
+
+            # CI status
+            if pr.head_sha:
                 try:
-                    suites = await gh.get_check_suites(repo, head_sha)
+                    suites = await gh.get_check_suites(pr.repo, pr.head_sha)
                     total_suites = len(suites)
                     new_completed_count = sum(1 for s in suites if s.get("status") == "completed")
                     result = check_suites_conclusion(suites)
                     if result:
                         new_check_status, new_check_conclusion = result
-                        conclusion_changed = (new_check_status, new_check_conclusion) != (last_check_status, last_check_conclusion)
-                        if conclusion_changed:
+                        should_forward = (
+                            (new_check_status, new_check_conclusion)
+                            != (pr.last_check_status, pr.last_check_conclusion)
+                            or pr.last_reported_head_sha != pr.head_sha
+                        )
+                        if should_forward:
                             logger.info(
-                                f"{ticket_key}: CI all suites done — {new_check_conclusion} "
+                                f"{ticket_key}: CI for {pr.repo}#{pr.pr_number} — {new_check_conclusion} "
                                 f"({new_completed_count}/{total_suites} suites complete)"
                             )
                             await forwarder.forward_github(
                                 payloads.check_suite_completed(
-                                    repo=repo,
-                                    branch=branch or "",
-                                    pr_number=pr_number,
+                                    repo=pr.repo,
+                                    branch=pr.branch or "",
+                                    pr_number=pr.pr_number,
                                     conclusion=new_check_conclusion,
                                 ),
                                 event_type="check_suite",
                             )
-                            last_check_status = new_check_status
-                            last_check_conclusion = new_check_conclusion
+                            pr.last_check_status = new_check_status
+                            pr.last_check_conclusion = new_check_conclusion
+                            pr.last_reported_head_sha = pr.head_sha
                     else:
                         logger.debug(
-                            f"{ticket_key}: CI suites still running "
+                            f"{ticket_key}: CI suites still running for {pr.repo}#{pr.pr_number} "
                             f"({new_completed_count}/{total_suites} suites complete)"
                         )
-                    last_completed_count = new_completed_count
+                        pr.last_check_status = None
+                        pr.last_check_conclusion = None
+                    pr.last_completed_count = new_completed_count
                 except Exception as e:
-                    logger.warning(f"CI check failed for {ticket_key}: {e}")
-            else:
-                logger.debug(f"{ticket_key}: skipping CI check — head_sha not yet known")
+                    logger.warning(f"CI check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
 
             # Reviews
             try:
-                reviews = await gh.get_reviews(repo, pr_number)
+                reviews = await gh.get_reviews(pr.repo, pr.pr_number)
                 rev = latest_review(reviews)
-                if rev and rev.get("id") != last_review_id:
+                if rev and rev.get("id") != pr.last_review_id:
                     reviewer = rev.get("user", {}).get("login", "")
-                    logger.info(f"{ticket_key}: new review by {reviewer} ({rev.get('state')})")
+                    logger.info(f"{ticket_key}: new review on {pr.repo}#{pr.pr_number} by {reviewer}")
                     await forwarder.forward_github(
                         payloads.pr_review_submitted(
-                            repo=repo,
-                            branch=branch or "",
-                            pr_number=pr_number,
-                            pr_title=pr_title or "",
-                            pr_url=pr_url or "",
+                            repo=pr.repo,
+                            branch=pr.branch or "",
+                            pr_number=pr.pr_number,
+                            pr_title=pr.pr_title or "",
+                            pr_url=pr.pr_url or "",
                             review_state=rev.get("state", ""),
                             review_body=rev.get("body", "") or "",
                             reviewer_login=reviewer,
                         ),
                         event_type="pull_request_review",
                     )
-                    last_review_id = rev.get("id")
+                    pr.last_review_id = rev.get("id")
             except Exception as e:
-                logger.debug(f"Review check failed for {ticket_key}: {e}")
+                logger.debug(f"Review check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
 
-            # PR comments (issue_comment events — needed for /forge skip-gate)
+            # PR comments
             try:
-                pr_comments = await gh.get_issue_comments(repo, pr_number)
-                if pr_comments and pr_comments[0].get("id") != state.last_pr_comment_id:
-                    # Comments are sorted desc (newest first). Collect all new
-                    # ones, then forward in chronological order.
+                pr_comments = await gh.get_issue_comments(pr.repo, pr.pr_number)
+                if pr_comments and pr_comments[0].get("id") != pr.last_pr_comment_id:
                     new_comments = []
                     for c in pr_comments:
-                        if c.get("id") == state.last_pr_comment_id:
+                        if c.get("id") == pr.last_pr_comment_id:
                             break
                         new_comments.append(c)
                     for c in reversed(new_comments):
@@ -647,25 +785,32 @@ class TicketWatcher:
                         body = c.get("body", "")
                         bot_login = get_settings().forge_bot_github_login
                         if bot_login and sender == bot_login:
-                            logger.debug(f"{ticket_key}: skipping own PR comment")
+                            logger.debug(f"{ticket_key}: skipping own PR comment on {pr.repo}#{pr.pr_number}")
                             continue
-                        logger.info(f"{ticket_key}: new PR comment by {sender}")
+                        logger.info(f"{ticket_key}: new PR comment on {pr.repo}#{pr.pr_number} by {sender}")
                         await forwarder.forward_github(
                             payloads.issue_comment(
-                                repo=repo,
-                                pr_number=pr_number,
+                                repo=pr.repo,
+                                pr_number=pr.pr_number,
                                 comment_body=body,
                                 sender_login=sender,
                             ),
                             event_type="issue_comment",
                         )
-                    last_pr_comment_id = pr_comments[0].get("id")
+                    pr.last_pr_comment_id = pr_comments[0].get("id")
             except Exception as e:
-                logger.warning(f"PR comment check failed for {ticket_key}: {e}")
+                logger.warning(f"PR comment check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
+
+        if all_merged and prs:
+            logger.info(f"{ticket_key}: all {len(prs)} PR(s) merged — removing from watch list")
+            await self.remove(ticket_key)
+            return
 
         prd_updates: dict = {}
+        spec_updates: dict = {}
         if state.issue_type in ("Feature", "Story"):
             prd_updates = await self._poll_prd_pr(ticket_key, state, comments)
+            spec_updates = await self._poll_spec_pr(ticket_key, state, comments, prd_updates)
             await self._sync_epics(ticket_key)
 
         async with self._lock:
@@ -677,22 +822,17 @@ class TicketWatcher:
                     summary=new_summary,
                     labels=new_labels,
                     last_comment_id=new_last_comment_id,
-                    repo=repo,
-                    pr_number=pr_number,
-                    branch=branch,
-                    head_sha=head_sha,
-                    pr_title=pr_title,
-                    pr_url=pr_url,
-                    last_check_status=last_check_status,
-                    last_check_conclusion=last_check_conclusion,
-                    last_completed_count=last_completed_count,
-                    last_review_id=last_review_id,
-                    last_pr_comment_id=last_pr_comment_id,
+                    prs=prs,
                     prd_pr_repo=prd_updates.get("prd_pr_repo", state.prd_pr_repo),
                     prd_pr_number=prd_updates.get("prd_pr_number", state.prd_pr_number),
                     prd_last_review_id=prd_updates.get("prd_last_review_id", state.prd_last_review_id),
                     prd_last_pr_comment_id=prd_updates.get("prd_last_pr_comment_id", state.prd_last_pr_comment_id),
                     prd_pr_merged=prd_updates.get("prd_pr_merged", state.prd_pr_merged),
+                    spec_pr_repo=spec_updates.get("spec_pr_repo", state.spec_pr_repo),
+                    spec_pr_number=spec_updates.get("spec_pr_number", state.spec_pr_number),
+                    spec_last_review_id=spec_updates.get("spec_last_review_id", state.spec_last_review_id),
+                    spec_last_pr_comment_id=spec_updates.get("spec_last_pr_comment_id", state.spec_last_pr_comment_id),
+                    spec_pr_merged=spec_updates.get("spec_pr_merged", state.spec_pr_merged),
                     poll_interval_seconds=state.poll_interval_seconds,
                     last_polled_at=state.last_polled_at,
                     next_poll_at=state.next_poll_at,
@@ -722,5 +862,14 @@ def _is_archived(labels: set[str]) -> bool:
 def _walk_adf(node: dict, out: list[str]) -> None:
     if node.get("type") == "text":
         out.append(node.get("text", ""))
+        for mark in node.get("marks", []):
+            if mark.get("type") == "link":
+                href = mark.get("attrs", {}).get("href", "")
+                if href:
+                    out.append(href)
+    elif node.get("type") == "inlineCard":
+        url = node.get("attrs", {}).get("url", "")
+        if url:
+            out.append(url)
     for child in node.get("content", []):
         _walk_adf(child, out)

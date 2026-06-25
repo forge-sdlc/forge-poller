@@ -1,4 +1,4 @@
-from poller.models import TicketState
+from poller.models import PrState, TicketState
 from poller.persistence import load_state, save_state
 
 
@@ -10,16 +10,18 @@ def _make_state(ticket_key: str) -> TicketState:
         summary="Test ticket",
         labels={"forge:approved", "forge:retry"},
         last_comment_id="42",
-        repo="org/repo",
-        pr_number=7,
-        branch="feat/x",
-        head_sha="abc123",
-        pr_title="My PR",
-        pr_url="https://github.com/org/repo/pull/7",
-        last_check_status="completed",
-        last_check_conclusion="success",
-        last_completed_count=3,
-        last_review_id=999,
+        prs=[PrState(
+            repo="org/repo",
+            pr_number=7,
+            branch="feat/x",
+            head_sha="abc123",
+            pr_title="My PR",
+            pr_url="https://github.com/org/repo/pull/7",
+            last_check_status="completed",
+            last_check_conclusion="success",
+            last_completed_count=3,
+            last_review_id=999,
+        )],
     )
 
 
@@ -45,8 +47,9 @@ def test_save_and_load_roundtrip(tmp_path):
     assert restored.ticket_key == "AISOS-1"
     assert restored.issue_type == "Story"
     assert restored.labels == {"forge:approved", "forge:retry"}
-    assert restored.pr_number == 7
-    assert restored.last_review_id == 999
+    assert len(restored.prs) == 1
+    assert restored.prs[0].pr_number == 7
+    assert restored.prs[0].last_review_id == 999
 
 
 def test_labels_roundtrip_as_set(tmp_path):
@@ -66,23 +69,13 @@ def test_none_fields_roundtrip(tmp_path):
         summary="Bug ticket",
         labels=set(),
         last_comment_id=None,
-        repo=None,
-        pr_number=None,
-        branch=None,
-        head_sha=None,
-        pr_title=None,
-        pr_url=None,
-        last_check_status=None,
-        last_check_conclusion=None,
-        last_completed_count=None,
-        last_review_id=None,
+        prs=[],
     )
     save_state(path, {"AISOS-2": state})
     reloaded = load_state(path)
     restored = reloaded["AISOS-2"]
-    assert restored.repo is None
-    assert restored.pr_number is None
-    assert restored.last_review_id is None
+    assert restored.prs == []
+    assert restored.last_comment_id is None
 
 
 def test_save_is_atomic(tmp_path):

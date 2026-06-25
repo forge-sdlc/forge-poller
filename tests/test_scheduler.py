@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 import poller.config as config_module
-from poller.models import TicketState
+from poller.models import PrState, TicketState
 from poller.persistence import load_state, save_state
 from poller.watcher import TicketWatcher
 
@@ -29,16 +29,7 @@ def _make_state(ticket_key: str, **overrides) -> TicketState:
         "summary": "Test",
         "labels": set(),
         "last_comment_id": None,
-        "repo": None,
-        "pr_number": None,
-        "branch": None,
-        "head_sha": None,
-        "pr_title": None,
-        "pr_url": None,
-        "last_check_status": None,
-        "last_check_conclusion": None,
-        "last_completed_count": None,
-        "last_review_id": None,
+        "prs": [],
     }
     values.update(overrides)
     return TicketState(**values)
@@ -64,10 +55,15 @@ def test_successful_poll_resets_failure_count_and_reschedules(monkeypatch):
     watcher._state = {
         "AISOS-1": _make_state(
             "AISOS-1",
-            repo="org/repo",
-            pr_number=1,
+            prs=[PrState(
+                repo="org/repo",
+                pr_number=1,
+                branch="feat/x",
+                head_sha="abc123",
+                pr_title="My PR",
+                pr_url="https://github.com/org/repo/pull/1",
+            )],
             failure_count=4,
-            last_check_conclusion=None,
         )
     }
     monkeypatch.setattr(watcher, "_jitter", lambda seconds: float(seconds))

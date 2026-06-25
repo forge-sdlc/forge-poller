@@ -26,16 +26,7 @@ def _make_state(ticket_key: str, issue_type: str = "Feature", labels: set | None
         summary="Test",
         labels=labels or set(),
         last_comment_id=None,
-        repo=None,
-        pr_number=None,
-        branch=None,
-        head_sha=None,
-        pr_title=None,
-        pr_url=None,
-        last_check_status=None,
-        last_check_conclusion=None,
-        last_completed_count=None,
-        last_review_id=None,
+        prs=[],
     )
 
 
@@ -287,7 +278,11 @@ class TestPollTriggersEpicSync:
     def test_poll_feature_calls_sync_epics(self, monkeypatch):
         watcher = TicketWatcher()
         watcher._state = {
-            "AISOS-566": _make_state("AISOS-566", issue_type="Feature"),
+            "AISOS-566": _make_state(
+                "AISOS-566",
+                issue_type="Feature",
+                labels={"forge:managed", "forge:plan-pending"},
+            ),
         }
 
         synced = []

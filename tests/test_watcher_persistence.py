@@ -23,16 +23,7 @@ def _make_state(ticket_key: str) -> TicketState:
         summary="Test",
         labels={"forge:approved"},
         last_comment_id="1",
-        repo=None,
-        pr_number=None,
-        branch=None,
-        head_sha=None,
-        pr_title=None,
-        pr_url=None,
-        last_check_status=None,
-        last_check_conclusion=None,
-        last_completed_count=None,
-        last_review_id=None,
+        prs=[],
     )
 
 

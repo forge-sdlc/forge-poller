@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import poller.config as config_module
 
-from poller.models import TicketState
+from poller.models import PrState, TicketState
 from poller.watcher import TicketWatcher
 
 
@@ -57,9 +57,16 @@ def _make_github_mock(suite_status="completed", suite_conclusion="failure", merg
     return mock
 
 
+def _make_github_mock_for_sha(head_sha, suite_conclusion="success"):
+    mock = _make_github_mock(suite_status="completed", suite_conclusion=suite_conclusion)
+    mock.get_pr.return_value["head"]["sha"] = head_sha
+    return mock
+
+
 def _make_watched_state(
     last_check_status=None,
     last_check_conclusion=None,
+    last_reported_head_sha=None,
 ) -> TicketState:
     return TicketState(
         ticket_key="BUG-42",
@@ -68,17 +75,17 @@ def _make_watched_state(
         summary="Test bug",
         labels=set(),
         last_comment_id=None,
-        repo="forge-sdlc/forge",
-        pr_number=52,
-        branch="forge/aisos-701",
-        head_sha="abc123",
-        pr_title="Test PR",
-        pr_url="https://github.com/forge-sdlc/forge/pull/52",
-        last_check_status=last_check_status,
-        last_check_conclusion=last_check_conclusion,
-        last_completed_count=None,
-        last_review_id=None,
-        last_pr_comment_id=None,
+        prs=[PrState(
+            repo="forge-sdlc/forge",
+            pr_number=52,
+            branch="forge/aisos-701",
+            head_sha="abc123",
+            pr_title="Test PR",
+            pr_url="https://github.com/forge-sdlc/forge/pull/52",
+            last_check_status=last_check_status,
+            last_check_conclusion=last_check_conclusion,
+            last_reported_head_sha=last_reported_head_sha,
+        )],
     )
 
 
@@ -103,8 +110,8 @@ class TestSnapshotDoesNotCaptureCiState:
         ):
             state = asyncio.run(watcher._snapshot("BUG-42"))
 
-        assert state.last_check_status is None
-        assert state.last_check_conclusion is None
+        assert state.prs[0].last_check_status is None
+        assert state.prs[0].last_check_conclusion is None
 
     def test_snapshot_leaves_ci_conclusion_as_none_when_ci_succeeded(self, monkeypatch):
         """Same: snapshot must not record 'success' as baseline either."""
@@ -119,8 +126,8 @@ class TestSnapshotDoesNotCaptureCiState:
         ):
             state = asyncio.run(watcher._snapshot("BUG-42"))
 
-        assert state.last_check_status is None
-        assert state.last_check_conclusion is None
+        assert state.prs[0].last_check_status is None
+        assert state.prs[0].last_check_conclusion is None
 
     def test_first_poll_fires_trigger_when_ci_completed_before_registration(self, monkeypatch):
         """When ticket is registered after CI already failed, the first poll fires the trigger."""
@@ -150,6 +157,84 @@ class TestSnapshotDoesNotCaptureCiState:
         assert len(forwarded) == 1
         assert forwarded[0][1] == "check_suite"
         assert forwarded[0][0]["check_suite"]["conclusion"] == "failure"
+
+
+class TestCiRerunFiresTrigger:
+    """When CI is re-run on the same SHA and completes with the same conclusion,
+    the poller must still forward the event."""
+
+    def test_rerun_with_same_conclusion_fires_trigger(self, monkeypatch):
+        reset_settings_env(monkeypatch)
+        watcher = TicketWatcher()
+        # First poll already recorded failure
+        watcher._state = {"BUG-42": _make_watched_state(
+            last_check_status="completed",
+            last_check_conclusion="failure",
+        )}
+
+        # Simulate re-run: first poll sees suites in-progress, second sees completed
+        mock_jira = _make_jira_mock()
+
+        gh_in_progress = _make_github_mock(suite_status="in_progress", suite_conclusion=None)
+        gh_completed = _make_github_mock(suite_status="completed", suite_conclusion="failure")
+
+        forwarded = []
+
+        async def fake_forward(payload, event_type):
+            forwarded.append((payload, event_type))
+
+        # Poll 1: suites in-progress → resets last_check_status/conclusion
+        with (
+            patch("poller.watcher.JiraClient", return_value=mock_jira),
+            patch("poller.watcher.GitHubClient", return_value=gh_in_progress),
+            patch("poller.watcher.forwarder.forward_github", side_effect=fake_forward),
+        ):
+            asyncio.run(watcher._poll("BUG-42"))
+
+        assert len(forwarded) == 0
+        state = watcher._state["BUG-42"]
+        assert state.prs[0].last_check_status is None
+        assert state.prs[0].last_check_conclusion is None
+
+        # Poll 2: suites completed again → fires trigger
+        with (
+            patch("poller.watcher.JiraClient", return_value=mock_jira),
+            patch("poller.watcher.GitHubClient", return_value=gh_completed),
+            patch("poller.watcher.forwarder.forward_github", side_effect=fake_forward),
+        ):
+            asyncio.run(watcher._poll("BUG-42"))
+
+        assert len(forwarded) == 1
+        assert forwarded[0][1] == "check_suite"
+        assert forwarded[0][0]["check_suite"]["conclusion"] == "failure"
+
+    def test_new_head_sha_with_same_conclusion_fires_trigger(self, monkeypatch):
+        reset_settings_env(monkeypatch)
+        watcher = TicketWatcher()
+        watcher._state = {"BUG-42": _make_watched_state(
+            last_check_status="completed",
+            last_check_conclusion="success",
+            last_reported_head_sha="abc123",
+        )}
+
+        mock_jira = _make_jira_mock()
+        mock_gh = _make_github_mock_for_sha("def456", suite_conclusion="success")
+        forwarded = []
+
+        async def fake_forward(payload, event_type):
+            forwarded.append((payload, event_type))
+
+        with (
+            patch("poller.watcher.JiraClient", return_value=mock_jira),
+            patch("poller.watcher.GitHubClient", return_value=mock_gh),
+            patch("poller.watcher.forwarder.forward_github", side_effect=fake_forward),
+        ):
+            asyncio.run(watcher._poll("BUG-42"))
+
+        assert len(forwarded) == 1
+        assert forwarded[0][1] == "check_suite"
+        state = watcher._state["BUG-42"]
+        assert state.prs[0].last_reported_head_sha == "def456"
 
 
 class TestCiCheckExceptionLogLevel:
