@@ -50,6 +50,21 @@ class TicketWatcher:
             if ticket_key in self._state:
                 return
         state = await self._snapshot(ticket_key)
+
+        # Registration snapshots the ticket's current state, so without this
+        # bootstrap event a forge:managed label added before /watch would never
+        # be observed as a change and Forge would not start the workflow.
+        if "forge:managed" in state.labels:
+            await forwarder.forward_jira(
+                payloads.label_changed(
+                    ticket_key=ticket_key,
+                    issue_type=state.issue_type,
+                    status=state.status,
+                    summary=state.summary,
+                    old_labels=state.labels - {"forge:managed"},
+                    new_labels=state.labels,
+                )
+            )
         async with self._lock:
             state.poll_interval_seconds = get_settings().poll_interval
             self._state[ticket_key] = state

@@ -1,6 +1,9 @@
 import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 import poller.config as config_module
+from poller import forwarder
 from poller.models import TicketState
 from poller.persistence import load_state, save_state
 from poller.watcher import TicketWatcher
@@ -54,6 +57,46 @@ def test_watcher_saves_after_add(tmp_path, monkeypatch):
 
     reloaded = load_state(str(state_file))
     assert "AISOS-1" in reloaded
+
+
+def test_add_forwards_bootstrap_event_for_managed_ticket(monkeypatch):
+    watcher = TicketWatcher()
+    state = _make_state("AISOS-1")
+    state.labels = {"custom-label", "forge:managed"}
+
+    async def mock_snapshot(_ticket_key: str) -> TicketState:
+        return state
+
+    forward = AsyncMock()
+    monkeypatch.setattr(watcher, "_snapshot", mock_snapshot)
+    monkeypatch.setattr(forwarder, "forward_jira", forward)
+
+    asyncio.run(watcher.add("AISOS-1"))
+
+    forward.assert_awaited_once()
+    payload = forward.await_args.args[0]
+    assert payload["issue"]["fields"]["labels"] == ["custom-label", "forge:managed"]
+    change = payload["changelog"]["items"][0]
+    assert change["fromString"] == "custom-label"
+    assert change["toString"] == "custom-label, forge:managed"
+    assert watcher._state["AISOS-1"].labels == {"custom-label", "forge:managed"}
+
+
+def test_add_does_not_forward_bootstrap_event_for_unmanaged_ticket(monkeypatch):
+    watcher = TicketWatcher()
+    state = _make_state("AISOS-1")
+    state.labels = {"custom-label"}
+
+    async def mock_snapshot(_ticket_key: str) -> TicketState:
+        return state
+
+    forward = AsyncMock()
+    monkeypatch.setattr(watcher, "_snapshot", mock_snapshot)
+    monkeypatch.setattr(forwarder, "forward_jira", forward)
+
+    asyncio.run(watcher.add("AISOS-1"))
+
+    forward.assert_not_awaited()
 
 
 def test_watcher_saves_after_remove(tmp_path, monkeypatch):

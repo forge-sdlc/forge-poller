@@ -141,6 +141,8 @@ an `archived` / `forge:archived` label.
 
 ## Notes
 
-- The poller only forwards changes detected *after* it starts watching. It snapshots the current state on registration and only fires events for things that change from that point on.
+- The poller snapshots current state on registration. If the ticket is already
+  `forge:managed`, registration forwards a bootstrap label-added event so Forge
+  can start its workflow; all other state changes are forwarded when detected.
 - Signature validation must be disabled in Forge for poller-forwarded events to be accepted. Set `JIRA_WEBHOOK_SECRET=` and `GITHUB_WEBHOOK_SECRET=` (empty) in Forge's `.env`.
 - This tool is intended for development only. In production, use real Jira and GitHub webhooks.
