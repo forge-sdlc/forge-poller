@@ -144,8 +144,8 @@ class TestSnapshotDoesNotCaptureCiState:
 
         forwarded = []
 
-        async def fake_forward(payload, event_type):
-            forwarded.append((payload, event_type))
+        async def fake_forward(payload, event_type, delivery_id):
+            forwarded.append((payload, event_type, delivery_id))
 
         with (
             patch("poller.watcher.JiraClient", return_value=mock_jira),
@@ -157,6 +157,8 @@ class TestSnapshotDoesNotCaptureCiState:
         assert len(forwarded) == 1
         assert forwarded[0][1] == "check_suite"
         assert forwarded[0][0]["check_suite"]["conclusion"] == "failure"
+        assert forwarded[0][0]["check_suite"]["head_sha"] == "abc123"
+        assert forwarded[0][2].startswith("poller-check_suite-")
 
 
 class TestCiRerunFiresTrigger:
@@ -180,7 +182,7 @@ class TestCiRerunFiresTrigger:
 
         forwarded = []
 
-        async def fake_forward(payload, event_type):
+        async def fake_forward(payload, event_type, delivery_id):
             forwarded.append((payload, event_type))
 
         # Poll 1: suites in-progress → resets last_check_status/conclusion
@@ -221,7 +223,7 @@ class TestCiRerunFiresTrigger:
         mock_gh = _make_github_mock_for_sha("def456", suite_conclusion="success")
         forwarded = []
 
-        async def fake_forward(payload, event_type):
+        async def fake_forward(payload, event_type, delivery_id):
             forwarded.append((payload, event_type))
 
         with (

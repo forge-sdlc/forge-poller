@@ -260,7 +260,7 @@ class TestPollMultiplePrs:
 
         forwarded = []
 
-        async def capture(payload, event_type):
+        async def capture(payload, event_type, delivery_id):
             forwarded.append(event_type)
 
         with (
@@ -335,7 +335,7 @@ class TestPollMultiplePrs:
 
         forwarded = []
 
-        async def capture(payload, event_type):
+        async def capture(payload, event_type, delivery_id):
             forwarded.append((event_type, payload.get("repository", {}).get("full_name")))
 
         with (

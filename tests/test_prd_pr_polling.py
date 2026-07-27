@@ -256,7 +256,7 @@ class TestPrdPrMerge:
                  patch("poller.watcher.forwarder") as mock_fwd:
                 MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
                 mock_fwd.forward_github = AsyncMock(
-                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                    side_effect=lambda p, event_type, delivery_id: forwarded_events.append(event_type)
                 )
                 result = await watcher._poll_prd_pr("AISOS-100", state, [])
             assert "pull_request" in forwarded_events
@@ -316,7 +316,7 @@ class TestPrdPrReviews:
                 MockGH.return_value.get_reviews = AsyncMock(return_value=mock_reviews)
                 MockGH.return_value.get_issue_comments = AsyncMock(return_value=[])
                 mock_fwd.forward_github = AsyncMock(
-                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                    side_effect=lambda p, event_type, delivery_id: forwarded_events.append(event_type)
                 )
                 result = await watcher._poll_prd_pr("AISOS-100", state, [])
             assert "pull_request_review" in forwarded_events
@@ -388,7 +388,7 @@ class TestPrdPrComments:
                 MockGH.return_value.get_reviews = AsyncMock(return_value=[])
                 MockGH.return_value.get_issue_comments = AsyncMock(return_value=mock_comments)
                 mock_fwd.forward_github = AsyncMock(
-                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                    side_effect=lambda p, event_type, delivery_id: forwarded_events.append(event_type)
                 )
                 result = await watcher._poll_prd_pr("AISOS-100", state, [])
             assert "issue_comment" in forwarded_events
@@ -447,7 +447,7 @@ class TestPrdPrComments:
         ]
         forwarded_bodies = []
 
-        async def capture_forward(payload, event_type):
+        async def capture_forward(payload, event_type, delivery_id):
             forwarded_bodies.append(payload["comment"]["body"])
 
         async def run():
@@ -794,7 +794,7 @@ class TestSpecPrMerge:
                  patch("poller.watcher.forwarder") as mock_fwd:
                 MockGH.return_value.get_pr = AsyncMock(return_value=mock_pr)
                 mock_fwd.forward_github = AsyncMock(
-                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                    side_effect=lambda p, event_type, delivery_id: forwarded_events.append(event_type)
                 )
                 result = await watcher._poll_spec_pr("AISOS-100", state, [])
             assert "pull_request" in forwarded_events
@@ -836,7 +836,7 @@ class TestSpecPrReviews:
                 MockGH.return_value.get_reviews = AsyncMock(return_value=mock_reviews)
                 MockGH.return_value.get_issue_comments = AsyncMock(return_value=[])
                 mock_fwd.forward_github = AsyncMock(
-                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                    side_effect=lambda p, event_type, delivery_id: forwarded_events.append(event_type)
                 )
                 result = await watcher._poll_spec_pr("AISOS-100", state, [])
             assert "pull_request_review" in forwarded_events
@@ -872,7 +872,7 @@ class TestSpecPrComments:
                 MockGH.return_value.get_reviews = AsyncMock(return_value=[])
                 MockGH.return_value.get_issue_comments = AsyncMock(return_value=mock_comments)
                 mock_fwd.forward_github = AsyncMock(
-                    side_effect=lambda p, event_type: forwarded_events.append(event_type)
+                    side_effect=lambda p, event_type, delivery_id: forwarded_events.append(event_type)
                 )
                 result = await watcher._poll_spec_pr("AISOS-100", state, [])
             assert "issue_comment" in forwarded_events

@@ -402,6 +402,9 @@ class TicketWatcher:
                         pr_url=pr_data.get("html_url", ""),
                     ),
                     event_type="pull_request",
+                    delivery_id=forwarder.github_delivery_id(
+                        "pull_request", prd_pr_repo, prd_pr_number, "merged"
+                    ),
                 )
                 prd_pr_merged = True
                 return _result()
@@ -430,6 +433,9 @@ class TicketWatcher:
                         reviewer_login=reviewer,
                     ),
                     event_type="pull_request_review",
+                    delivery_id=forwarder.github_delivery_id(
+                        "pull_request_review", prd_pr_repo, prd_pr_number, rev.get("id")
+                    ),
                 )
                 prd_last_review_id = rev.get("id")
 
@@ -456,6 +462,9 @@ class TicketWatcher:
                             sender_login=sender,
                         ),
                         event_type="issue_comment",
+                        delivery_id=forwarder.github_delivery_id(
+                            "issue_comment", prd_pr_repo, prd_pr_number, c.get("id")
+                        ),
                     )
                 prd_last_pr_comment_id = pr_comments[0].get("id")
 
@@ -541,6 +550,9 @@ class TicketWatcher:
                         pr_url=pr_data.get("html_url", ""),
                     ),
                     event_type="pull_request",
+                    delivery_id=forwarder.github_delivery_id(
+                        "pull_request", spec_pr_repo, spec_pr_number, "merged"
+                    ),
                 )
                 spec_pr_merged = True
                 return _result()
@@ -568,6 +580,9 @@ class TicketWatcher:
                         reviewer_login=reviewer,
                     ),
                     event_type="pull_request_review",
+                    delivery_id=forwarder.github_delivery_id(
+                        "pull_request_review", spec_pr_repo, spec_pr_number, rev.get("id")
+                    ),
                 )
                 spec_last_review_id = rev.get("id")
 
@@ -593,6 +608,9 @@ class TicketWatcher:
                             sender_login=sender,
                         ),
                         event_type="issue_comment",
+                        delivery_id=forwarder.github_delivery_id(
+                            "issue_comment", spec_pr_repo, spec_pr_number, c.get("id")
+                        ),
                     )
                 spec_last_pr_comment_id = pr_comments[0].get("id")
 
@@ -712,6 +730,9 @@ class TicketWatcher:
                             pr_url=pr.pr_url or "",
                         ),
                         event_type="pull_request",
+                        delivery_id=forwarder.github_delivery_id(
+                            "pull_request", pr.repo, pr.pr_number, "merged"
+                        ),
                     )
                     pr.merged = True
                     continue
@@ -745,8 +766,21 @@ class TicketWatcher:
                                     branch=pr.branch or "",
                                     pr_number=pr.pr_number,
                                     conclusion=new_check_conclusion,
+                                    head_sha=pr.head_sha,
                                 ),
                                 event_type="check_suite",
+                                delivery_id=forwarder.github_delivery_id(
+                                    "check_suite",
+                                    pr.repo,
+                                    pr.pr_number,
+                                    pr.head_sha,
+                                    *(
+                                        f"{suite.get('id')}:{suite.get('updated_at')}:{suite.get('conclusion')}"
+                                        for suite in sorted(
+                                            suites, key=lambda item: str(item.get("id", ""))
+                                        )
+                                    ),
+                                ),
                             )
                             pr.last_check_status = new_check_status
                             pr.last_check_conclusion = new_check_conclusion
@@ -781,6 +815,9 @@ class TicketWatcher:
                             reviewer_login=reviewer,
                         ),
                         event_type="pull_request_review",
+                        delivery_id=forwarder.github_delivery_id(
+                            "pull_request_review", pr.repo, pr.pr_number, rev.get("id")
+                        ),
                     )
                     pr.last_review_id = rev.get("id")
             except Exception as e:
@@ -811,6 +848,9 @@ class TicketWatcher:
                                 sender_login=sender,
                             ),
                             event_type="issue_comment",
+                            delivery_id=forwarder.github_delivery_id(
+                                "issue_comment", pr.repo, pr.pr_number, c.get("id")
+                            ),
                         )
                     pr.last_pr_comment_id = pr_comments[0].get("id")
             except Exception as e:

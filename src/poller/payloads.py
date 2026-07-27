@@ -72,6 +72,7 @@ def check_suite_completed(
     branch: str,
     pr_number: int,
     conclusion: str,
+    head_sha: str,
 ) -> dict[str, Any]:
     return {
         "action": "completed",
@@ -79,6 +80,7 @@ def check_suite_completed(
             "status": "completed",
             "conclusion": conclusion,
             "head_branch": branch,
+            "head_sha": head_sha,
             "pull_requests": [{"number": pr_number}],
         },
         "repository": {"full_name": repo},
