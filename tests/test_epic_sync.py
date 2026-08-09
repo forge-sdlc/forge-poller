@@ -221,7 +221,7 @@ class TestWatchListShowsChildren:
             ),
         }
 
-        result = watcher.list()
+        result = watcher.list_tickets()
 
         parents = [t for t in result if t["ticket_key"] == "AISOS-566"]
         assert len(parents) == 1
@@ -239,7 +239,7 @@ class TestWatchListShowsChildren:
             ),
         }
 
-        result = watcher.list()
+        result = watcher.list_tickets()
 
         top_level_keys = [t["ticket_key"] for t in result]
         assert "AISOS-567" not in top_level_keys
@@ -251,7 +251,7 @@ class TestWatchListShowsChildren:
             "AISOS-566": _make_state("AISOS-566", issue_type="Feature"),
         }
 
-        result = watcher.list()
+        result = watcher.list_tickets()
 
         assert result[0]["children"] == []
 
@@ -266,7 +266,7 @@ class TestWatchListShowsChildren:
             ),
         }
 
-        result = watcher.list()
+        result = watcher.list_tickets()
 
         assert len(result) == 1
         assert result[0]["ticket_key"] == "AISOS-567"

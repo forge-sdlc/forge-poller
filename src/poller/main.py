@@ -47,7 +47,7 @@ async def watch(
         )
     for key in body.tickets:
         await watcher.add(key.upper())
-    return {"watching": watcher.list()}
+    return {"watching": watcher.list_tickets()}
 
 
 @app.delete("/watch/{ticket_key}", status_code=200)
@@ -55,12 +55,12 @@ async def unwatch(ticket_key: str) -> dict[str, Any]:
     removed = await watcher.remove(ticket_key.upper())
     if not removed:
         raise HTTPException(status_code=404, detail=f"{ticket_key} not in watch list")
-    return {"watching": watcher.list()}
+    return {"watching": watcher.list_tickets()}
 
 
 @app.get("/watch")
 async def list_watched() -> dict[str, Any]:
-    return {"watching": watcher.list()}
+    return {"watching": watcher.list_tickets()}
 
 
 @app.get("/health")
