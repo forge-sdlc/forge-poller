@@ -14,6 +14,28 @@ class GitHubClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
+    async def _get_all_pages(
+        self, url: str, params: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch every page of a paginated list endpoint via the Link header.
+
+        Reviews and issue comments are returned oldest-first and capped at 100
+        per page. Fetching only the first page silently drops the newest items
+        once a PR accumulates more than 100 of them.
+        """
+        params = {"per_page": 100, **(params or {})}
+        results: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(headers=self._headers) as client:
+            next_url: str | None = url
+            next_params: dict[str, Any] | None = params
+            while next_url:
+                r = await client.get(next_url, params=next_params)
+                r.raise_for_status()
+                results.extend(r.json())
+                next_url = r.links.get("next", {}).get("url")
+                next_params = None  # the "next" URL already carries the cursor
+        return results
+
     async def get_pr(self, repo: str, pr_number: int) -> dict[str, Any]:
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(f"https://api.github.com/repos/{repo}/pulls/{pr_number}")
@@ -40,24 +62,16 @@ class GitHubClient:
 
     async def get_issue_comments(self, repo: str, issue_number: int) -> list[dict[str, Any]]:
         """Fetch issue/PR comments, returned newest-first."""
-        async with httpx.AsyncClient(headers=self._headers) as client:
-            r = await client.get(
-                f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments",
-                params={"per_page": 100},
-            )
-            r.raise_for_status()
-            comments = r.json()
-            comments.reverse()
-            return comments
+        comments = await self._get_all_pages(
+            f"https://api.github.com/repos/{repo}/issues/{issue_number}/comments"
+        )
+        comments.reverse()
+        return comments
 
     async def get_reviews(self, repo: str, pr_number: int) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(headers=self._headers) as client:
-            r = await client.get(
-                f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
-                params={"per_page": 100},
-            )
-            r.raise_for_status()
-            return r.json()
+        return await self._get_all_pages(
+            f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+        )
 
 
 def check_suites_conclusion(suites: list[dict[str, Any]]) -> tuple[str, str] | None:
