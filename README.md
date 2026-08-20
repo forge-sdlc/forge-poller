@@ -25,7 +25,8 @@ GitHub PR discovery is automatic: the poller reads the PR link from Jira remote 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-cd poller
+git clone https://github.com/forge-sdlc/forge-poller.git
+cd forge-poller
 cp .env.example .env   # fill in your credentials
 uv sync
 ```
@@ -46,6 +47,10 @@ POLL_INTERVAL=30                          # base seconds between polls
 POLLER_MAX_CONCURRENCY=8                  # tickets checked at the same time
 POLLER_MAX_POLL_INTERVAL=300              # max adaptive backoff in seconds
 POLLER_JITTER_RATIO=0.2                   # spreads polls to avoid bursts
+
+# Ignore events created by Forge itself (recommended)
+FORGE_BOT_ACCOUNT_ID=your-jira-service-account-id
+FORGE_BOT_GITHUB_LOGIN=your-forge-bot-login
 ```
 
 The poller uses a single-process async scheduler. Newly watched and active PR
@@ -62,7 +67,7 @@ BETA_INVITE_CODE=your-secret-code
 
 When set, the `/watch` endpoint requires an `X-Invite-Code` header matching this value. Requests without a valid code receive a 403. Leave empty or unset to disable the check entirely.
 
-Use `forge-cli register` (see below) instead of raw `curl` to handle the code prompt automatically.
+Use `forge-watch register` (see below) instead of raw `curl` to handle the code automatically.
 
 ### Persistence (optional)
 
@@ -80,24 +85,31 @@ uv run uvicorn poller.main:app --port 8001
 
 ## Usage
 
-### forge-cli (beta)
+### forge-watch (beta)
 
 If you have been given a beta invite code, install the CLI and use it instead of raw `curl`:
 
 ```bash
-pip install git+https://github.com/forge-sdlc/forge-poller-plugin.git
+uv tool install git+https://github.com/forge-sdlc/forge-poller.git
 ```
 
-Then register a ticket:
+Configure the hosted poller URL and invite code once, then register one or more tickets:
 
 ```bash
-forge-cli register AISOS-123
+forge-watch configure
+# Forge server URL: https://poller.example.com
 # Invite code: (hidden prompt)
-# Welcome to the Forge beta!
+
+forge-watch register AISOS-123
 # Ticket AISOS-123 is now being watched.
+# Welcome to the Forge beta!
+
+forge-watch register AISOS-123 AISOS-124
 ```
 
-By default the CLI talks to `http://localhost:8001`. Set `FORGE_POLLER_URL` to override.
+Configuration is stored in `~/.config/forge-watch/config.json`. `FORGE_POLLER_URL`
+overrides the saved server URL when set; the invite code still comes from the
+saved configuration or an interactive prompt.
 
 ### Watch a ticket (curl)
 
@@ -134,7 +146,7 @@ an `archived` / `forge:archived` label.
 
 1. Start the Forge worker: `uv run forge worker`
 2. Start the poller: `uv run uvicorn poller.main:app --port 8001`
-3. Register the ticket you're testing: `POST /watch`
+3. Register the ticket you're testing: `forge-watch register AISOS-123` or `POST /watch`
 4. Interact normally in Jira (approve, comment, add labels)
 5. The poller detects the change within `POLL_INTERVAL` seconds and forwards it to Forge
 6. Watch the Forge worker logs to see the workflow advance
