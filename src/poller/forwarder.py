@@ -22,9 +22,14 @@ def jira_delivery_id() -> str:
     return f"poller-jira-{uuid4()}"
 
 
-async def forward_jira(
-    payload: dict[str, Any], delivery_id: str | None = None
-) -> None:
+def jira_comment_delivery_id(ticket_key: str, comment_id: object) -> str:
+    """Build a stable delivery ID for one synthetic Jira comment event."""
+    raw_identity = f"{ticket_key}\x1f{comment_id}"
+    digest = hashlib.sha256(raw_identity.encode()).hexdigest()[:24]
+    return f"poller-jira-comment-{digest}"
+
+
+async def forward_jira(payload: dict[str, Any], delivery_id: str | None = None) -> None:
     settings = get_settings()
     url = f"{settings.forge_gateway_url}/api/v1/webhooks/jira"
     delivery_id = delivery_id or jira_delivery_id()
@@ -42,13 +47,9 @@ async def forward_jira(
         if response_status == "duplicate":
             logger.warning(f"Forge skipped duplicate Jira event {delivery_id}")
         else:
-            logger.info(
-                f"Forwarded Jira event {delivery_id} to Forge: {r.status_code}"
-            )
+            logger.info(f"Forwarded Jira event {delivery_id} to Forge: {r.status_code}")
     else:
-        raise RuntimeError(
-            f"Forge rejected Jira event: {r.status_code} {r.text}"
-        )
+        raise RuntimeError(f"Forge rejected Jira event: {r.status_code} {r.text}")
 
 
 async def forward_github(payload: dict[str, Any], event_type: str, delivery_id: str) -> None:
@@ -67,14 +68,10 @@ async def forward_github(payload: dict[str, Any], event_type: str, delivery_id: 
         except (ValueError, AttributeError):
             response_status = None
         if response_status == "duplicate":
-            logger.warning(
-                f"Forge skipped duplicate GitHub {event_type} event {delivery_id}"
-            )
+            logger.warning(f"Forge skipped duplicate GitHub {event_type} event {delivery_id}")
         else:
             logger.info(
                 f"Forwarded GitHub {event_type} event {delivery_id} to Forge: {r.status_code}"
             )
     else:
-        raise RuntimeError(
-            f"Forge rejected GitHub {event_type} event: {r.status_code} {r.text}"
-        )
+        raise RuntimeError(f"Forge rejected GitHub {event_type} event: {r.status_code} {r.text}")

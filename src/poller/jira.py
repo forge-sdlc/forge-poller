@@ -6,9 +6,7 @@ import httpx
 
 from poller.config import get_settings
 
-_GITHUB_PR_PATTERN = re.compile(
-    r"github\.com/([^/]+/[^/]+)/pull/(\d+)", re.IGNORECASE
-)
+_GITHUB_PR_PATTERN = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", re.IGNORECASE)
 
 
 class JiraClient:
@@ -31,7 +29,29 @@ class JiraClient:
                 params={"fields": fields},
             )
             r.raise_for_status()
-            return r.json()
+            issue = r.json()
+
+            # Jira only embeds a page of comments in an issue response. Replace
+            # it with the complete, chronological collection so the watcher can
+            # safely walk every comment since its cursor.
+            comments: list[dict[str, Any]] = []
+            start_at = 0
+            while True:
+                r = await client.get(
+                    f"{self._base}/rest/api/3/issue/{key}/comment",
+                    params={"startAt": start_at, "maxResults": 100, "orderBy": "created"},
+                )
+                r.raise_for_status()
+                page = r.json()
+                values = page.get("comments", [])
+                comments.extend(values)
+                start_at += len(values)
+                total = page.get("total", start_at)
+                if not values or start_at >= total:
+                    break
+
+            issue.setdefault("fields", {}).setdefault("comment", {})["comments"] = comments
+            return issue
 
     async def get_remote_links(self, key: str) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(headers=self._headers) as client:
@@ -43,7 +63,7 @@ class JiraClient:
         """Return keys of active forge-managed children of parent_key."""
         jql = (
             f'labels = "forge:managed" AND labels = "forge:parent:{parent_key}"'
-            f' AND issuetype in (Epic, Task)'
+            f" AND issuetype in (Epic, Task)"
         )
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.post(

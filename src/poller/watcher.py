@@ -14,9 +14,7 @@ from poller.persistence import load_state, save_state
 
 logger = logging.getLogger(__name__)
 
-_PRD_COMMENT_PATTERN = re.compile(
-    r"github\.com/([^/]+/[^/]+)/pull/(\d+)", re.IGNORECASE
-)
+_PRD_COMMENT_PATTERN = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", re.IGNORECASE)
 _SPEC_PUBLICATION_PATTERN = re.compile(
     r"\b(?:spec|specification)\s+published\s+for\s+review\b", re.IGNORECASE
 )
@@ -103,7 +101,7 @@ class TicketWatcher:
         for s in self._state.values():
             for label in s.labels:
                 if label.startswith("forge:parent:"):
-                    parent_key = label[len("forge:parent:"):]
+                    parent_key = label[len("forge:parent:") :]
                     if parent_key in self._state:
                         children_of.setdefault(parent_key, []).append(_entry(s))
                         child_keys.add(s.ticket_key)
@@ -135,10 +133,7 @@ class TicketWatcher:
         now = time.time()
         async with self._lock:
             launched = 0
-            while (
-                len(self._inflight) < settings.poller_max_concurrency
-                and self._schedule_heap
-            ):
+            while len(self._inflight) < settings.poller_max_concurrency and self._schedule_heap:
                 due_at, _seq, key = self._schedule_heap[0]
                 if key not in self._state or self._state[key].next_poll_at != due_at:
                     heapq.heappop(self._schedule_heap)
@@ -281,16 +276,22 @@ class TicketWatcher:
                         if pr_comments:
                             pr_state.last_pr_comment_id = pr_comments[0].get("id")
                     except Exception as e:
-                        logger.debug(f"Could not fetch PR comments for {ticket_key} {repo}#{pr_number}: {e}")
+                        logger.debug(
+                            f"Could not fetch PR comments for {ticket_key} {repo}#{pr_number}: {e}"
+                        )
                     try:
                         suites = await gh.get_check_suites(repo, pr_state.head_sha)
-                        pr_state.last_completed_count = sum(1 for s in suites if s.get("status") == "completed")
+                        pr_state.last_completed_count = sum(
+                            1 for s in suites if s.get("status") == "completed"
+                        )
                         reviews = await gh.get_reviews(repo, pr_number)
                         rev = latest_review(reviews)
                         if rev:
                             pr_state.last_review_id = rev.get("id")
                     except Exception as e:
-                        logger.debug(f"Could not fetch GitHub state for {ticket_key} {repo}#{pr_number}: {e}")
+                        logger.debug(
+                            f"Could not fetch GitHub state for {ticket_key} {repo}#{pr_number}: {e}"
+                        )
                     prs.append(pr_state)
                 except Exception as e:
                     logger.debug(f"Could not fetch PR {repo}#{pr_number} for {ticket_key}: {e}")
@@ -319,8 +320,7 @@ class TicketWatcher:
         parent_label = f"forge:parent:{feature_key}"
         async with self._lock:
             watched_children = {
-                key for key, state in self._state.items()
-                if parent_label in state.labels
+                key for key, state in self._state.items() if parent_label in state.labels
             }
 
         for key in active_keys - watched_children:
@@ -418,9 +418,7 @@ class TicketWatcher:
             rev = latest_review(reviews)
             if rev and rev.get("id") != prd_last_review_id:
                 reviewer = rev.get("user", {}).get("login", "")
-                logger.info(
-                    f"{ticket_key}: new PRD PR review by {reviewer} ({rev.get('state')})"
-                )
+                logger.info(f"{ticket_key}: new PRD PR review by {reviewer} ({rev.get('state')})")
                 await forwarder.forward_github(
                     payloads.pr_review_submitted(
                         repo=prd_pr_repo,
@@ -506,10 +504,7 @@ class TicketWatcher:
                 for m in _PRD_COMMENT_PATTERN.finditer(body):
                     discovered_repo = m.group(1)
                     discovered_number = int(m.group(2))
-                    if (
-                        discovered_repo == prd_repo
-                        and discovered_number == prd_number
-                    ):
+                    if discovered_repo == prd_repo and discovered_number == prd_number:
                         continue
                     gh = GitHubClient()
                     try:
@@ -565,9 +560,7 @@ class TicketWatcher:
             rev = latest_review(reviews)
             if rev and rev.get("id") != spec_last_review_id:
                 reviewer = rev.get("user", {}).get("login", "")
-                logger.info(
-                    f"{ticket_key}: new spec PR review by {reviewer} ({rev.get('state')})"
-                )
+                logger.info(f"{ticket_key}: new spec PR review by {reviewer} ({rev.get('state')})")
                 await forwarder.forward_github(
                     payloads.pr_review_submitted(
                         repo=spec_pr_repo,
@@ -654,29 +647,46 @@ class TicketWatcher:
                 )
             )
 
-        # New comment
+        # New comments. JiraClient expands the issue's embedded comment page to
+        # the complete chronological history, so walk the entire cursor window.
+        new_comments: list[dict] = []
         if new_last_comment_id and new_last_comment_id != state.last_comment_id:
-            comment = comments[-1]
+            if state.last_comment_id is None:
+                new_comments = comments
+            else:
+                cursor_index = next(
+                    (
+                        index
+                        for index, comment in enumerate(comments)
+                        if str(comment.get("id")) == str(state.last_comment_id)
+                    ),
+                    None,
+                )
+                if cursor_index is None:
+                    raise RuntimeError(
+                        f"{ticket_key}: Jira comment cursor {state.last_comment_id!r} "
+                        "was not found; refusing to skip comments"
+                    )
+                new_comments = comments[cursor_index + 1 :]
+
+        for comment in new_comments:
             body = _extract_comment_body(comment.get("body"))
             author = comment.get("author", {})
-            bot_id = get_settings().forge_bot_account_id
-            if bot_id and author.get("accountId") == bot_id:
-                logger.debug(f"{ticket_key}: skipping comment from Forge bot")
-            else:
-                logger.info(f"{ticket_key}: new comment from {author.get('displayName')}")
-                await forwarder.forward_jira(
-                    payloads.comment_created(
-                        ticket_key=ticket_key,
-                        issue_type=state.issue_type,
-                        status=new_status,
-                        summary=new_summary,
-                        labels=new_labels,
-                        body=body,
-                        author_account_id=author.get("accountId", ""),
-                        author_display_name=author.get("displayName", ""),
-                        author_email=author.get("emailAddress", ""),
-                    )
-                )
+            logger.info(f"{ticket_key}: new comment from {author.get('displayName')}")
+            await forwarder.forward_jira(
+                payloads.comment_created(
+                    ticket_key=ticket_key,
+                    issue_type=state.issue_type,
+                    status=new_status,
+                    summary=new_summary,
+                    labels=new_labels,
+                    body=body,
+                    author_account_id=author.get("accountId", ""),
+                    author_display_name=author.get("displayName", ""),
+                    author_email=author.get("emailAddress", ""),
+                ),
+                delivery_id=forwarder.jira_comment_delivery_id(ticket_key, comment.get("id")),
+            )
 
         # Discover new PRs from remote links
         prs = list(state.prs)
@@ -689,17 +699,21 @@ class TicketWatcher:
                 if (repo, pr_number) not in existing_pr_keys:
                     try:
                         pr = await gh.get_pr(repo, pr_number)
-                        prs.append(PrState(
-                            repo=repo,
-                            pr_number=pr_number,
-                            branch=pr.get("head", {}).get("ref", ""),
-                            head_sha=pr.get("head", {}).get("sha", ""),
-                            pr_title=pr.get("title", ""),
-                            pr_url=pr.get("html_url", ""),
-                        ))
+                        prs.append(
+                            PrState(
+                                repo=repo,
+                                pr_number=pr_number,
+                                branch=pr.get("head", {}).get("ref", ""),
+                                head_sha=pr.get("head", {}).get("sha", ""),
+                                pr_title=pr.get("title", ""),
+                                pr_url=pr.get("html_url", ""),
+                            )
+                        )
                         logger.info(f"{ticket_key}: discovered PR {repo}#{pr_number}")
                     except Exception as e:
-                        logger.debug(f"PR discovery failed for {ticket_key} {repo}#{pr_number}: {e}")
+                        logger.debug(
+                            f"PR discovery failed for {ticket_key} {repo}#{pr_number}: {e}"
+                        )
         except Exception as e:
             logger.debug(f"PR discovery failed for {ticket_key}: {e}")
 
@@ -737,7 +751,9 @@ class TicketWatcher:
                     pr.merged = True
                     continue
             except Exception as e:
-                logger.debug(f"PR merge check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
+                logger.debug(
+                    f"PR merge check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}"
+                )
 
             all_merged = False
 
@@ -750,11 +766,10 @@ class TicketWatcher:
                     result = check_suites_conclusion(suites)
                     if result:
                         new_check_status, new_check_conclusion = result
-                        should_forward = (
-                            (new_check_status, new_check_conclusion)
-                            != (pr.last_check_status, pr.last_check_conclusion)
-                            or pr.last_reported_head_sha != pr.head_sha
-                        )
+                        should_forward = (new_check_status, new_check_conclusion) != (
+                            pr.last_check_status,
+                            pr.last_check_conclusion,
+                        ) or pr.last_reported_head_sha != pr.head_sha
                         if should_forward:
                             logger.info(
                                 f"{ticket_key}: CI for {pr.repo}#{pr.pr_number} — {new_check_conclusion} "
@@ -794,7 +809,9 @@ class TicketWatcher:
                         pr.last_check_conclusion = None
                     pr.last_completed_count = new_completed_count
                 except Exception as e:
-                    logger.warning(f"CI check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
+                    logger.warning(
+                        f"CI check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}"
+                    )
 
             # Reviews
             try:
@@ -802,7 +819,9 @@ class TicketWatcher:
                 rev = latest_review(reviews)
                 if rev and rev.get("id") != pr.last_review_id:
                     reviewer = rev.get("user", {}).get("login", "")
-                    logger.info(f"{ticket_key}: new review on {pr.repo}#{pr.pr_number} by {reviewer}")
+                    logger.info(
+                        f"{ticket_key}: new review on {pr.repo}#{pr.pr_number} by {reviewer}"
+                    )
                     await forwarder.forward_github(
                         payloads.pr_review_submitted(
                             repo=pr.repo,
@@ -837,9 +856,13 @@ class TicketWatcher:
                         body = c.get("body", "")
                         bot_login = get_settings().forge_bot_github_login
                         if bot_login and sender == bot_login:
-                            logger.debug(f"{ticket_key}: skipping own PR comment on {pr.repo}#{pr.pr_number}")
+                            logger.debug(
+                                f"{ticket_key}: skipping own PR comment on {pr.repo}#{pr.pr_number}"
+                            )
                             continue
-                        logger.info(f"{ticket_key}: new PR comment on {pr.repo}#{pr.pr_number} by {sender}")
+                        logger.info(
+                            f"{ticket_key}: new PR comment on {pr.repo}#{pr.pr_number} by {sender}"
+                        )
                         await forwarder.forward_github(
                             payloads.issue_comment(
                                 repo=pr.repo,
@@ -854,7 +877,9 @@ class TicketWatcher:
                         )
                     pr.last_pr_comment_id = pr_comments[0].get("id")
             except Exception as e:
-                logger.warning(f"PR comment check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
+                logger.warning(
+                    f"PR comment check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}"
+                )
 
         if all_merged and prs:
             logger.info(f"{ticket_key}: all {len(prs)} PR(s) merged — removing from watch list")
@@ -880,13 +905,21 @@ class TicketWatcher:
                     prs=prs,
                     prd_pr_repo=prd_updates.get("prd_pr_repo", state.prd_pr_repo),
                     prd_pr_number=prd_updates.get("prd_pr_number", state.prd_pr_number),
-                    prd_last_review_id=prd_updates.get("prd_last_review_id", state.prd_last_review_id),
-                    prd_last_pr_comment_id=prd_updates.get("prd_last_pr_comment_id", state.prd_last_pr_comment_id),
+                    prd_last_review_id=prd_updates.get(
+                        "prd_last_review_id", state.prd_last_review_id
+                    ),
+                    prd_last_pr_comment_id=prd_updates.get(
+                        "prd_last_pr_comment_id", state.prd_last_pr_comment_id
+                    ),
                     prd_pr_merged=prd_updates.get("prd_pr_merged", state.prd_pr_merged),
                     spec_pr_repo=spec_updates.get("spec_pr_repo", state.spec_pr_repo),
                     spec_pr_number=spec_updates.get("spec_pr_number", state.spec_pr_number),
-                    spec_last_review_id=spec_updates.get("spec_last_review_id", state.spec_last_review_id),
-                    spec_last_pr_comment_id=spec_updates.get("spec_last_pr_comment_id", state.spec_last_pr_comment_id),
+                    spec_last_review_id=spec_updates.get(
+                        "spec_last_review_id", state.spec_last_review_id
+                    ),
+                    spec_last_pr_comment_id=spec_updates.get(
+                        "spec_last_pr_comment_id", state.spec_last_pr_comment_id
+                    ),
                     spec_pr_merged=spec_updates.get("spec_pr_merged", state.spec_pr_merged),
                     poll_interval_seconds=state.poll_interval_seconds,
                     last_polled_at=state.last_polled_at,
