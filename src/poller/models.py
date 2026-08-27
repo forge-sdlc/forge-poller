@@ -26,6 +26,10 @@ class TicketState:
     summary: str
     labels: set[str]
     last_comment_id: str | None
+    # Native Jira issue revision from fields.updated.  This is delivery
+    # metadata for generating equivalent webhook-shaped observations, not a
+    # workflow checkpoint or poll cursor.
+    issue_updated: str | None = None
     prs: list[PrState] = field(default_factory=list)
     # PRD proposals PR tracking
     prd_pr_repo: str | None = None
