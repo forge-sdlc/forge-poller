@@ -17,9 +17,36 @@ def github_delivery_id(event_type: str, *identity: object) -> str:
     return f"poller-{event_type}-{digest}"
 
 
-def jira_delivery_id() -> str:
-    """Build a unique delivery ID for one synthetic Jira event."""
-    return f"poller-jira-{uuid4()}"
+def jira_delivery_id(payload: dict[str, Any] | None = None) -> str:
+    """Build a replay-stable ID when a Jira provider identity is available.
+
+    The random fallback is retained for legacy callers that do not provide a
+    webhook-shaped payload.  Provider comment IDs and issue ``updated`` values
+    are stable across poller restarts and therefore make the forwarded
+    delivery interchangeable with a native Jira webhook at Forge.
+    """
+    if payload is None:
+        return f"poller-jira-{uuid4()}"
+    issue = payload.get("issue", {})
+    key = issue.get("key", "") if isinstance(issue, dict) else ""
+    comment = payload.get("comment", {})
+    if isinstance(comment, dict) and comment.get("id") is not None:
+        identity = ("comment", key, comment["id"])
+    else:
+        fields = issue.get("fields", {}) if isinstance(issue, dict) else {}
+        updated = fields.get("updated") if isinstance(fields, dict) else None
+        if isinstance(updated, str) and updated:
+            identity = ("issue", key, updated)
+        else:
+            changelog = payload.get("changelog", {})
+            items = changelog.get("items") if isinstance(changelog, dict) else None
+            if items:
+                identity = ("changelog", key, items)
+            else:
+                return f"poller-jira-{uuid4()}"
+    raw_identity = "\x1f".join(str(part) for part in identity)
+    digest = hashlib.sha256(raw_identity.encode()).hexdigest()[:24]
+    return f"poller-jira-{digest}"
 
 
 async def forward_jira(
@@ -27,7 +54,7 @@ async def forward_jira(
 ) -> None:
     settings = get_settings()
     url = f"{settings.forge_gateway_url}/api/v1/webhooks/jira"
-    delivery_id = delivery_id or jira_delivery_id()
+    delivery_id = delivery_id or jira_delivery_id(payload)
     headers = {
         "Content-Type": "application/json",
         "X-Atlassian-Webhook-Identifier": delivery_id,

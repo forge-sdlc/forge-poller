@@ -63,6 +63,7 @@ class TicketWatcher:
                     summary=state.summary,
                     old_labels=state.labels - {"forge:managed"},
                     new_labels=state.labels,
+                    updated=state.issue_updated,
                 )
             )
         async with self._lock:
@@ -255,6 +256,7 @@ class TicketWatcher:
         labels = set(fields.get("labels", []))
         comments = fields.get("comment", {}).get("comments", [])
         last_comment_id = comments[-1]["id"] if comments else None
+        issue_updated = fields.get("updated")
 
         issue_type = fields.get("issuetype", {}).get("name", "")
         status = fields.get("status", {}).get("name", "")
@@ -304,6 +306,7 @@ class TicketWatcher:
             summary=summary,
             labels=labels,
             last_comment_id=last_comment_id,
+            issue_updated=issue_updated if isinstance(issue_updated, str) else None,
             prs=prs,
         )
 
@@ -400,6 +403,9 @@ class TicketWatcher:
                         pr_number=prd_pr_number,
                         pr_title=pr_data.get("title", ""),
                         pr_url=pr_data.get("html_url", ""),
+                        head_sha=pr_data.get("head", {}).get("sha", ""),
+                        pr_body=pr_data.get("body", "") or "",
+                        base_branch=pr_data.get("base", {}).get("ref", ""),
                     ),
                     event_type="pull_request",
                     delivery_id=forwarder.github_delivery_id(
@@ -431,6 +437,12 @@ class TicketWatcher:
                         review_state=rev.get("state", ""),
                         review_body=rev.get("body", "") or "",
                         reviewer_login=reviewer,
+                        review_id=rev.get("id"),
+                        head_sha=pr_data.get("head", {}).get("sha", ""),
+                        base_branch=pr_data.get("base", {}).get("ref", ""),
+                        pr_body=pr_data.get("body", "") or "",
+                        pr_state=pr_data.get("state", "open"),
+                        draft=bool(pr_data.get("draft", False)),
                     ),
                     event_type="pull_request_review",
                     delivery_id=forwarder.github_delivery_id(
@@ -460,6 +472,11 @@ class TicketWatcher:
                             pr_number=prd_pr_number,
                             comment_body=c.get("body", ""),
                             sender_login=sender,
+                            comment_id=c.get("id"),
+                            issue_title=prd_title,
+                            issue_body=pr_data.get("body", "") or "",
+                            issue_state=pr_data.get("state", "open"),
+                            issue_url=prd_url,
                         ),
                         event_type="issue_comment",
                         delivery_id=forwarder.github_delivery_id(
@@ -548,6 +565,9 @@ class TicketWatcher:
                         pr_number=spec_pr_number,
                         pr_title=pr_data.get("title", ""),
                         pr_url=pr_data.get("html_url", ""),
+                        head_sha=pr_data.get("head", {}).get("sha", ""),
+                        pr_body=pr_data.get("body", "") or "",
+                        base_branch=pr_data.get("base", {}).get("ref", ""),
                     ),
                     event_type="pull_request",
                     delivery_id=forwarder.github_delivery_id(
@@ -578,6 +598,12 @@ class TicketWatcher:
                         review_state=rev.get("state", ""),
                         review_body=rev.get("body", "") or "",
                         reviewer_login=reviewer,
+                        review_id=rev.get("id"),
+                        head_sha=pr_data.get("head", {}).get("sha", ""),
+                        base_branch=pr_data.get("base", {}).get("ref", ""),
+                        pr_body=pr_data.get("body", "") or "",
+                        pr_state=pr_data.get("state", "open"),
+                        draft=bool(pr_data.get("draft", False)),
                     ),
                     event_type="pull_request_review",
                     delivery_id=forwarder.github_delivery_id(
@@ -606,6 +632,11 @@ class TicketWatcher:
                             pr_number=spec_pr_number,
                             comment_body=c.get("body", ""),
                             sender_login=sender,
+                            comment_id=c.get("id"),
+                            issue_title=spec_title,
+                            issue_body=pr_data.get("body", "") or "",
+                            issue_state=pr_data.get("state", "open"),
+                            issue_url=spec_url,
                         ),
                         event_type="issue_comment",
                         delivery_id=forwarder.github_delivery_id(
@@ -651,6 +682,9 @@ class TicketWatcher:
                     summary=new_summary,
                     old_labels=state.labels,
                     new_labels=new_labels,
+                    updated=fields.get("updated")
+                    if isinstance(fields.get("updated"), str)
+                    else None,
                 )
             )
 
@@ -675,6 +709,13 @@ class TicketWatcher:
                         author_account_id=author.get("accountId", ""),
                         author_display_name=author.get("displayName", ""),
                         author_email=author.get("emailAddress", ""),
+                        comment_id=comment.get("id"),
+                        issue_updated=fields.get("updated")
+                        if isinstance(fields.get("updated"), str)
+                        else None,
+                        comment_created=comment.get("created")
+                        if isinstance(comment.get("created"), str)
+                        else None,
                     )
                 )
 
@@ -728,6 +769,8 @@ class TicketWatcher:
                             pr_number=pr.pr_number,
                             pr_title=pr.pr_title or "",
                             pr_url=pr.pr_url or "",
+                            head_sha=pr.head_sha or "",
+                            base_branch=pr_data.get("base", {}).get("ref", ""),
                         ),
                         event_type="pull_request",
                         delivery_id=forwarder.github_delivery_id(
@@ -813,6 +856,12 @@ class TicketWatcher:
                             review_state=rev.get("state", ""),
                             review_body=rev.get("body", "") or "",
                             reviewer_login=reviewer,
+                            review_id=rev.get("id"),
+                            head_sha=pr_data.get("head", {}).get("sha", ""),
+                            base_branch=pr_data.get("base", {}).get("ref", ""),
+                            pr_body=pr_data.get("body", "") or "",
+                            pr_state=pr_data.get("state", "open"),
+                            draft=bool(pr_data.get("draft", False)),
                         ),
                         event_type="pull_request_review",
                         delivery_id=forwarder.github_delivery_id(
@@ -846,6 +895,11 @@ class TicketWatcher:
                                 pr_number=pr.pr_number,
                                 comment_body=body,
                                 sender_login=sender,
+                                comment_id=c.get("id"),
+                                issue_title=pr.pr_title or "",
+                                issue_body=pr_data.get("body", "") or "",
+                                issue_state=pr_data.get("state", "open"),
+                                issue_url=pr.pr_url or "",
                             ),
                             event_type="issue_comment",
                             delivery_id=forwarder.github_delivery_id(
@@ -877,6 +931,9 @@ class TicketWatcher:
                     summary=new_summary,
                     labels=new_labels,
                     last_comment_id=new_last_comment_id,
+                    issue_updated=fields.get("updated")
+                    if isinstance(fields.get("updated"), str)
+                    else state.issue_updated,
                     prs=prs,
                     prd_pr_repo=prd_updates.get("prd_pr_repo", state.prd_pr_repo),
                     prd_pr_number=prd_updates.get("prd_pr_number", state.prd_pr_number),
