@@ -42,8 +42,11 @@ def comment_created(
     body: str,
     author_account_id: str,
     author_display_name: str,
-    author_email: str = "",
+    author_email: str = "",  # ignored — always blank so Forge gateway won't self-filter
 ) -> dict[str, Any]:
+    # Leave emailAddress empty: Forge skips comment_created when email equals
+    # JIRA_USER_EMAIL. Local single-account setups share that address with humans.
+    _ = author_email
     return {
         "webhookEvent": "comment_created",
         "issue": {
@@ -60,7 +63,7 @@ def comment_created(
             "author": {
                 "accountId": author_account_id,
                 "displayName": author_display_name,
-                "emailAddress": author_email,
+                "emailAddress": "",
             },
         },
         "user": {"accountId": author_account_id, "displayName": author_display_name},

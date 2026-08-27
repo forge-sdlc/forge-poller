@@ -42,7 +42,10 @@ class Settings(BaseSettings):
     )
     forge_bot_account_id: str = Field(
         default="",
-        description="Jira account ID of the Forge service account — comments from this account are ignored",
+        description=(
+            "Deprecated: unused. Jira ticket comments are always forwarded; "
+            "Forge ignores non-command bodies."
+        ),
     )
     forge_bot_github_login: str = Field(
         default="",

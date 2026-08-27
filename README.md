@@ -48,10 +48,15 @@ POLLER_MAX_CONCURRENCY=8                  # tickets checked at the same time
 POLLER_MAX_POLL_INTERVAL=300              # max adaptive backoff in seconds
 POLLER_JITTER_RATIO=0.2                   # spreads polls to avoid bursts
 
-# Ignore events created by Forge itself (recommended)
-FORGE_BOT_ACCOUNT_ID=your-jira-service-account-id
+# Skip GitHub PR comments from the Forge bot (recommended)
 FORGE_BOT_GITHUB_LOGIN=your-forge-bot-login
+# FORGE_BOT_ACCOUNT_ID is unused (Jira ticket comments are always forwarded)
 ```
+
+Jira ticket comments are always forwarded (including Forge-bot authored ones).
+Forge itself treats non-`!` / `?` / `/forge` bodies as informational. Author
+`emailAddress` is left blank in forwarded payloads so the gateway does not
+drop human comments in local single-account setups.
 
 The poller uses a single-process async scheduler. Newly watched and active PR
 tickets are checked close to `POLL_INTERVAL`; quieter ticket states and failures
