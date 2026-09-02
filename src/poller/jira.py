@@ -33,6 +33,36 @@ class JiraClient:
             r.raise_for_status()
             return r.json()
 
+    async def get_comments(self, key: str) -> list[dict[str, Any]]:
+        """Return all issue comments oldest-first, following startAt pagination.
+
+        GET issue embeds only a recent window of comments. Use this when the
+        saved cursor is absent from that window so intervening comments are not
+        permanently skipped.
+        """
+        comments: list[dict[str, Any]] = []
+        start_at = 0
+        max_results = 100
+        async with httpx.AsyncClient(headers=self._headers) as client:
+            while True:
+                r = await client.get(
+                    f"{self._base}/rest/api/3/issue/{key}/comment",
+                    params={
+                        "startAt": start_at,
+                        "maxResults": max_results,
+                        "orderBy": "created",
+                    },
+                )
+                r.raise_for_status()
+                data = r.json()
+                page = data.get("comments", [])
+                comments.extend(page)
+                total = int(data.get("total", len(comments)))
+                if not page or start_at + len(page) >= total:
+                    break
+                start_at += len(page)
+        return comments
+
     async def get_remote_links(self, key: str) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(f"{self._base}/rest/api/3/issue/{key}/remotelink")

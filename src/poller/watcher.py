@@ -659,6 +659,7 @@ class TicketWatcher:
         # comment, and so local single-account setups still deliver human !.
         # emailAddress is left blank in the payload (see payloads.comment_created).
         new_comments: list[dict] = []
+        comment_cursor_unresolved = False
         if new_last_comment_id and new_last_comment_id != state.last_comment_id:
             if state.last_comment_id is None:
                 new_comments = list(comments)
@@ -672,9 +673,29 @@ class TicketWatcher:
                     None,
                 )
                 if cursor_index is None:
-                    # Cursor missing from the embedded page — forward the tip only
-                    # rather than replaying the entire visible history.
-                    new_comments = [comments[-1]] if comments else []
+                    # Embedded GET issue window omitted the cursor — paginate the
+                    # comment API until we can resolve the gap.
+                    comments = await jira.get_comments(ticket_key)
+                    new_last_comment_id = comments[-1]["id"] if comments else None
+                    cursor_index = next(
+                        (
+                            index
+                            for index, comment in enumerate(comments)
+                            if str(comment.get("id")) == str(state.last_comment_id)
+                        ),
+                        None,
+                    )
+                    if cursor_index is None:
+                        # Cursor deleted or otherwise absent from the full history —
+                        # do not forward tip-only or advance (would drop the gap).
+                        logger.warning(
+                            f"{ticket_key}: last_comment_id {state.last_comment_id} "
+                            "not found after comment pagination — leaving cursor unchanged"
+                        )
+                        comment_cursor_unresolved = True
+                        new_comments = []
+                    else:
+                        new_comments = comments[cursor_index + 1 :]
                 else:
                     new_comments = comments[cursor_index + 1 :]
 
@@ -893,7 +914,11 @@ class TicketWatcher:
                     status=new_status,
                     summary=new_summary,
                     labels=new_labels,
-                    last_comment_id=new_last_comment_id,
+                    last_comment_id=(
+                        state.last_comment_id
+                        if comment_cursor_unresolved
+                        else new_last_comment_id
+                    ),
                     prs=prs,
                     prd_pr_repo=prd_updates.get("prd_pr_repo", state.prd_pr_repo),
                     prd_pr_number=prd_updates.get("prd_pr_number", state.prd_pr_number),
