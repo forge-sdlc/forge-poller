@@ -654,29 +654,67 @@ class TicketWatcher:
                 )
             )
 
-        # New comment
+        # New comments after the cursor (chronological). Forward all of them —
+        # including Forge-bot authored ones — so a bot tip cannot mask a human
+        # comment, and so local single-account setups still deliver human !.
+        # emailAddress is left blank in the payload (see payloads.comment_created).
+        new_comments: list[dict] = []
+        comment_cursor_unresolved = False
         if new_last_comment_id and new_last_comment_id != state.last_comment_id:
-            comment = comments[-1]
+            if state.last_comment_id is None:
+                new_comments = list(comments)
+            else:
+                cursor_index = next(
+                    (
+                        index
+                        for index, comment in enumerate(comments)
+                        if str(comment.get("id")) == str(state.last_comment_id)
+                    ),
+                    None,
+                )
+                if cursor_index is None:
+                    # Embedded GET issue window omitted the cursor — paginate the
+                    # comment API until we can resolve the gap.
+                    comments = await jira.get_comments(ticket_key)
+                    new_last_comment_id = comments[-1]["id"] if comments else None
+                    cursor_index = next(
+                        (
+                            index
+                            for index, comment in enumerate(comments)
+                            if str(comment.get("id")) == str(state.last_comment_id)
+                        ),
+                        None,
+                    )
+                    if cursor_index is None:
+                        # Cursor deleted or otherwise absent from the full history —
+                        # do not forward tip-only or advance (would drop the gap).
+                        logger.warning(
+                            f"{ticket_key}: last_comment_id {state.last_comment_id} "
+                            "not found after comment pagination — leaving cursor unchanged"
+                        )
+                        comment_cursor_unresolved = True
+                        new_comments = []
+                    else:
+                        new_comments = comments[cursor_index + 1 :]
+                else:
+                    new_comments = comments[cursor_index + 1 :]
+
+        for comment in new_comments:
             body = _extract_comment_body(comment.get("body"))
             author = comment.get("author", {})
-            bot_id = get_settings().forge_bot_account_id
-            if bot_id and author.get("accountId") == bot_id:
-                logger.debug(f"{ticket_key}: skipping comment from Forge bot")
-            else:
-                logger.info(f"{ticket_key}: new comment from {author.get('displayName')}")
-                await forwarder.forward_jira(
-                    payloads.comment_created(
-                        ticket_key=ticket_key,
-                        issue_type=state.issue_type,
-                        status=new_status,
-                        summary=new_summary,
-                        labels=new_labels,
-                        body=body,
-                        author_account_id=author.get("accountId", ""),
-                        author_display_name=author.get("displayName", ""),
-                        author_email=author.get("emailAddress", ""),
-                    )
+            logger.info(f"{ticket_key}: new comment from {author.get('displayName')}")
+            await forwarder.forward_jira(
+                payloads.comment_created(
+                    ticket_key=ticket_key,
+                    issue_type=state.issue_type,
+                    status=new_status,
+                    summary=new_summary,
+                    labels=new_labels,
+                    body=body,
+                    author_account_id=author.get("accountId", ""),
+                    author_display_name=author.get("displayName", ""),
                 )
+            )
 
         # Discover new PRs from remote links
         prs = list(state.prs)
@@ -876,7 +914,11 @@ class TicketWatcher:
                     status=new_status,
                     summary=new_summary,
                     labels=new_labels,
-                    last_comment_id=new_last_comment_id,
+                    last_comment_id=(
+                        state.last_comment_id
+                        if comment_cursor_unresolved
+                        else new_last_comment_id
+                    ),
                     prs=prs,
                     prd_pr_repo=prd_updates.get("prd_pr_repo", state.prd_pr_repo),
                     prd_pr_number=prd_updates.get("prd_pr_number", state.prd_pr_number),
