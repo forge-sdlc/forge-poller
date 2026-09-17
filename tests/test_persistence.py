@@ -1,3 +1,8 @@
+import os
+from unittest.mock import MagicMock
+
+import pytest
+
 from poller.models import PrState, TicketState
 from poller.persistence import load_state, save_state
 
@@ -110,3 +115,26 @@ def test_load_ignores_unknown_future_fields(tmp_path):
     reloaded = load_state(str(path))
 
     assert reloaded["AISOS-1"].ticket_key == "AISOS-1"
+
+
+def test_state_with_pending_comment_is_owner_only(tmp_path):
+    path = tmp_path / "state.json"
+    state = _make_state("AISOS-1")
+    state.pending_jira_delivery = {"payload": {"comment": {"body": "private feedback"}}, "delivery_id": "id"}
+    old_umask = os.umask(0o022)
+    try:
+        save_state(str(path), {"AISOS-1": state})
+    finally:
+        os.umask(old_umask)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert load_state(str(path))["AISOS-1"].pending_jira_delivery == state.pending_jira_delivery
+
+
+def test_failed_state_sync_preserves_original_and_cleans_tempfile(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    save_state(str(path), {})
+    monkeypatch.setattr("poller.persistence.os.fsync", MagicMock(side_effect=OSError("disk failure")))
+    with pytest.raises(OSError, match="disk failure"):
+        save_state(str(path), {"AISOS-1": _make_state("AISOS-1")})
+    assert load_state(str(path)) == {}
+    assert list(tmp_path.iterdir()) == [path]

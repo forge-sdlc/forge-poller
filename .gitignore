@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+.tmp/
 dist/
 *.egg-info/
 poller-state.json

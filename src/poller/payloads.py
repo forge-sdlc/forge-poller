@@ -1,5 +1,7 @@
 from typing import Any
 
+from poller.jira_revisions import revision_time
+
 
 def label_changed(
     ticket_key: str,
@@ -8,7 +10,8 @@ def label_changed(
     summary: str,
     old_labels: set[str],
     new_labels: set[str],
-    updated: str = "",
+    *,
+    updated: str | None = None,
 ) -> dict[str, Any]:
     issue_fields: dict[str, Any] = {
         "issuetype": {"name": issue_type},
@@ -16,7 +19,8 @@ def label_changed(
         "summary": summary,
         "labels": sorted(new_labels),
     }
-    if updated:
+    if updated is not None:
+        revision_time(updated, "issue.updated")
         issue_fields["updated"] = updated
 
     return {
@@ -47,10 +51,11 @@ def comment_created(
     body: str,
     author_account_id: str,
     author_display_name: str,
-    comment_id: str = "",
-    created: str = "",
-    updated: str = "",
     author_email: str = "",  # ignored — always blank so Forge gateway won't self-filter
+    *,
+    comment_id: str | None = None,
+    created: str | None = None,
+    updated: str | None = None,
 ) -> dict[str, Any]:
     # Leave emailAddress empty: Forge skips comment_created when email equals
     # JIRA_USER_EMAIL. Local single-account setups share that address with humans.
@@ -63,12 +68,17 @@ def comment_created(
             "emailAddress": "",
         },
     }
-    if comment_id:
+    # Legacy callers may omit metadata; polling always supplies a complete revision.
+    if any(value is not None for value in (comment_id, created, updated)):
+        if not isinstance(comment_id, str) or not comment_id.strip():
+            raise ValueError("Jira comment.id must be a non-empty string")
+        created_time = revision_time(created, "comment.created")
         comment["id"] = comment_id
-    if created:
         comment["created"] = created
-    if updated:
-        comment["updated"] = updated
+        if updated is not None:
+            if revision_time(updated, "comment.updated") < created_time:
+                raise ValueError("Jira comment.updated precedes comment.created")
+            comment["updated"] = updated
 
     return {
         "webhookEvent": "comment_created",

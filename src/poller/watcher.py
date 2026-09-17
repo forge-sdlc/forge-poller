@@ -1,11 +1,14 @@
 import asyncio
+import copy
 import heapq
 import logging
 import random
 import re
 import time
+from dataclasses import replace
 
 from poller import forwarder, payloads
+from poller.jira_revisions import revision_time
 from poller.config import get_settings
 from poller.github import GitHubClient, check_suites_conclusion, latest_review
 from poller.jira import JiraClient, extract_pr_info
@@ -55,7 +58,7 @@ class TicketWatcher:
         # bootstrap event a forge:managed label added before /watch would never
         # be observed as a change and Forge would not start the workflow.
         if "forge:managed" in state.labels:
-            await forwarder.forward_jira(
+            state.pending_jira_delivery = self._jira_delivery(
                 payloads.label_changed(
                     ticket_key=ticket_key,
                     issue_type=state.issue_type,
@@ -63,16 +66,79 @@ class TicketWatcher:
                     summary=state.summary,
                     old_labels=state.labels - {"forge:managed"},
                     new_labels=state.labels,
-                    updated=state.updated,
+                    updated=state.updated or "",
                 )
             )
         async with self._lock:
+            if ticket_key in self._state:
+                return
             state.poll_interval_seconds = get_settings().poll_interval
             self._state[ticket_key] = state
+            try:
+                self._save_state()
+            except Exception:
+                del self._state[ticket_key]
+                raise
             self._schedule_locked(ticket_key, time.time() + self._jitter(1))
+        await self._flush_jira_delivery(ticket_key)
         logger.info(f"Watching {ticket_key} (labels={state.labels})")
+
+    def _save_state(self) -> None:
         if self._state_file:
             save_state(self._state_file, self._state)
+
+    @staticmethod
+    def _jira_delivery(payload: dict) -> dict:
+        return {"payload": copy.deepcopy(payload), "delivery_id": forwarder.jira_delivery_id()}
+
+    async def _flush_jira_delivery(self, ticket_key: str) -> None:
+        async with self._lock:
+            state = self._state.get(ticket_key)
+            pending = state.pending_jira_delivery if state else None
+            if pending is not None:
+                self._save_state()
+        if pending is None:
+            return
+        outcome = await forwarder.forward_jira(pending["payload"], delivery_id=pending["delivery_id"])
+        async with self._lock:
+            state = self._state.get(ticket_key)
+            if state is None or state.pending_jira_delivery != pending:
+                return
+            payload = pending["payload"]
+            changes: dict = {"pending_jira_delivery": None}
+            if payload["webhookEvent"] == "comment_created":
+                changes["last_comment_id"] = payload["comment"]["id"]
+                logger.info(
+                    "%s: Jira cursor advanced %s -> %s after gateway %s; %s",
+                    ticket_key, state.last_comment_id, changes["last_comment_id"],
+                    outcome or "acknowledgement",
+                    "event was not queued (see skip reason)" if outcome == "skipped"
+                    else "workflow processing must be checked in Forge",
+                )
+            else:
+                changes["labels"] = set(payload["issue"]["fields"]["labels"])
+            self._state[ticket_key] = replace(state, **changes)
+            self._save_state()
+
+    async def _forward_jira(self, ticket_key: str, payload: dict) -> None:
+        async with self._lock:
+            state = self._state.get(ticket_key)
+            if state is None:
+                return
+            if state.pending_jira_delivery is not None:
+                raise RuntimeError(f"{ticket_key}: an earlier Jira delivery is still pending")
+            self._state[ticket_key] = replace(state, pending_jira_delivery=self._jira_delivery(payload))
+            self._save_state()
+        await self._flush_jira_delivery(ticket_key)
+
+    @staticmethod
+    async def _comments_at_revision(jira: JiraClient, ticket_key: str, updated: str | None) -> list:
+        revision_time(updated, "issue.updated")
+        comments = await jira.get_comments(ticket_key)
+        after = await jira.get_issue(ticket_key)
+        if after.get("fields", {}).get("updated") != updated:
+            raise ValueError(f"{ticket_key}: issue changed during comment pagination; retry")
+        return comments
 
     async def remove(self, ticket_key: str) -> bool:
         async with self._lock:
@@ -260,7 +326,7 @@ class TicketWatcher:
         issue_type = fields.get("issuetype", {}).get("name", "")
         status = fields.get("status", {}).get("name", "")
         summary = fields.get("summary", "")
-        updated = fields.get("updated", "")
+        updated = fields.get("updated") or None
 
         prs: list[PrState] = []
         try:
@@ -623,6 +689,7 @@ class TicketWatcher:
         return _result()
 
     async def _poll(self, ticket_key: str) -> None:
+        await self._flush_jira_delivery(ticket_key)
         async with self._lock:
             if ticket_key not in self._state:
                 return
@@ -635,7 +702,8 @@ class TicketWatcher:
         new_labels = set(fields.get("labels", []))
         new_status = fields.get("status", {}).get("name", "")
         new_summary = fields.get("summary", "")
-        new_updated = fields.get("updated", "")
+        new_issue_type = fields.get("issuetype", {}).get("name", state.issue_type)
+        new_updated = fields.get("updated") or None
         comments = fields.get("comment", {}).get("comments", [])
         new_last_comment_id = comments[-1]["id"] if comments else None
 
@@ -644,28 +712,18 @@ class TicketWatcher:
             await self.remove(ticket_key)
             return
 
-        # Label change
-        if new_labels != state.labels:
-            logger.info(f"{ticket_key}: labels changed {state.labels} → {new_labels}")
-            await forwarder.forward_jira(
-                payloads.label_changed(
-                    ticket_key=ticket_key,
-                    issue_type=state.issue_type,
-                    status=new_status,
-                    summary=new_summary,
-                    old_labels=state.labels,
-                    new_labels=new_labels,
-                    updated=new_updated,
-                )
-            )
-
         # New comments after the cursor (chronological). Forward all of them —
         # including Forge-bot authored ones — so a bot tip cannot mask a human
         # comment, and so local single-account setups still deliver human !.
         # emailAddress is left blank in the payload (see payloads.comment_created).
+        comment_page = fields.get("comment", {})
+        paginated = comment_page.get("total", len(comments)) > len(comments)
+        if paginated:
+            comments = await self._comments_at_revision(jira, ticket_key, new_updated)
+            new_last_comment_id = comments[-1]["id"] if comments else None
         new_comments: list[dict] = []
         comment_cursor_unresolved = False
-        if new_last_comment_id and new_last_comment_id != state.last_comment_id:
+        if new_last_comment_id != state.last_comment_id:
             if state.last_comment_id is None:
                 new_comments = list(comments)
             else:
@@ -680,7 +738,8 @@ class TicketWatcher:
                 if cursor_index is None:
                     # Embedded GET issue window omitted the cursor — paginate the
                     # comment API until we can resolve the gap.
-                    comments = await jira.get_comments(ticket_key)
+                    if not paginated:
+                        comments = await self._comments_at_revision(jira, ticket_key, new_updated)
                     new_last_comment_id = comments[-1]["id"] if comments else None
                     cursor_index = next(
                         (
@@ -704,14 +763,16 @@ class TicketWatcher:
                 else:
                     new_comments = comments[cursor_index + 1 :]
 
+        # Preflight the entire window before sending anything: malformed or tied
+        # revisions must not be followed by a label that makes the backlog stale.
+        comment_payloads = []
         for comment in new_comments:
             body = _extract_comment_body(comment.get("body"))
             author = comment.get("author", {})
-            logger.info(f"{ticket_key}: new comment from {author.get('displayName')}")
-            await forwarder.forward_jira(
+            comment_payloads.append(
                 payloads.comment_created(
                     ticket_key=ticket_key,
-                    issue_type=state.issue_type,
+                    issue_type=new_issue_type,
                     status=new_status,
                     summary=new_summary,
                     labels=new_labels,
@@ -720,9 +781,61 @@ class TicketWatcher:
                     author_display_name=author.get("displayName", ""),
                     comment_id=comment.get("id") or "",
                     created=comment.get("created") or "",
-                    updated=comment.get("updated") or "",
+                    updated=comment.get("updated"),
                 )
             )
+
+        comment_payloads.sort(key=lambda p: revision_time(p["comment"]["created"], "comment.created"))
+        previous = next(
+            (c for c in comments if str(c.get("id")) == str(state.last_comment_id)), None
+        )
+        last_comment_time = (
+            revision_time(previous["created"], "comment.created")
+            if previous and previous.get("created") else None
+        )
+        seen_ids: set[str] = set()
+        for payload in comment_payloads:
+            comment = payload["comment"]
+            timestamp = revision_time(comment["created"], "comment.created")
+            if comment["id"] in seen_ids:
+                raise ValueError(f"{ticket_key}: duplicate comment ID in recovered window")
+            seen_ids.add(comment["id"])
+            if last_comment_time is not None and timestamp <= last_comment_time:
+                logger.warning(
+                    "%s: comments have the same timestamp or go backwards at %s; "
+                    "Jira events deferred, cursor retained; see docs/jira-ledger-recovery.md",
+                    ticket_key, comment["id"],
+                )
+                comment_cursor_unresolved = True
+                break
+            last_comment_time = timestamp
+
+        label_payload = None
+        if new_labels != state.labels and not comment_cursor_unresolved:
+            label_payload = payloads.label_changed(
+                ticket_key=ticket_key, issue_type=new_issue_type, status=new_status,
+                summary=new_summary, old_labels=state.labels, new_labels=new_labels,
+                updated=new_updated or "",
+            )
+            if last_comment_time is not None and revision_time(
+                new_updated, "issue.updated"
+            ) <= last_comment_time:
+                logger.warning(
+                    "%s: label snapshot deferred: issue.updated is not newer than the "
+                    "comment cursor; retaining previous labels until Jira advances; "
+                    "see docs/jira-ledger-recovery.md", ticket_key,
+                )
+                label_payload = None
+
+        if not comment_cursor_unresolved:
+            for payload in comment_payloads:
+                logger.info("%s: forwarding Jira comment %s", ticket_key, payload["comment"]["id"])
+                await self._forward_jira(ticket_key, payload)
+            if comment_payloads:
+                new_last_comment_id = comment_payloads[-1]["comment"]["id"]
+            if label_payload is not None:
+                await self._forward_jira(ticket_key, label_payload)
+        acknowledged_labels = new_labels if label_payload is not None else state.labels
 
         # Discover new PRs from remote links
         prs = list(state.prs)
@@ -902,14 +1015,17 @@ class TicketWatcher:
             except Exception as e:
                 logger.warning(f"PR comment check failed for {ticket_key} {pr.repo}#{pr.pr_number}: {e}")
 
-        if all_merged and prs:
+        if (
+            all_merged and prs and not comment_cursor_unresolved
+            and acknowledged_labels == new_labels
+        ):
             logger.info(f"{ticket_key}: all {len(prs)} PR(s) merged — removing from watch list")
             await self.remove(ticket_key)
             return
 
         prd_updates: dict = {}
         spec_updates: dict = {}
-        if state.issue_type in ("Feature", "Story"):
+        if new_issue_type in ("Feature", "Story"):
             prd_updates = await self._poll_prd_pr(ticket_key, state, comments)
             spec_updates = await self._poll_spec_pr(ticket_key, state, comments, prd_updates)
             await self._sync_epics(ticket_key)
@@ -918,10 +1034,10 @@ class TicketWatcher:
             if ticket_key in self._state:
                 self._state[ticket_key] = TicketState(
                     ticket_key=ticket_key,
-                    issue_type=state.issue_type,
+                    issue_type=new_issue_type,
                     status=new_status,
                     summary=new_summary,
-                    labels=new_labels,
+                    labels=acknowledged_labels,
                     last_comment_id=(
                         state.last_comment_id
                         if comment_cursor_unresolved
