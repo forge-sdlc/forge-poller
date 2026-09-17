@@ -26,6 +26,7 @@ class TicketState:
     summary: str
     labels: set[str]
     last_comment_id: str | None
+    updated: str = ""
     prs: list[PrState] = field(default_factory=list)
     # PRD proposals PR tracking
     prd_pr_repo: str | None = None

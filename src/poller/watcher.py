@@ -63,6 +63,7 @@ class TicketWatcher:
                     summary=state.summary,
                     old_labels=state.labels - {"forge:managed"},
                     new_labels=state.labels,
+                    updated=state.updated,
                 )
             )
         async with self._lock:
@@ -259,6 +260,7 @@ class TicketWatcher:
         issue_type = fields.get("issuetype", {}).get("name", "")
         status = fields.get("status", {}).get("name", "")
         summary = fields.get("summary", "")
+        updated = fields.get("updated", "")
 
         prs: list[PrState] = []
         try:
@@ -304,6 +306,7 @@ class TicketWatcher:
             summary=summary,
             labels=labels,
             last_comment_id=last_comment_id,
+            updated=updated,
             prs=prs,
         )
 
@@ -632,6 +635,7 @@ class TicketWatcher:
         new_labels = set(fields.get("labels", []))
         new_status = fields.get("status", {}).get("name", "")
         new_summary = fields.get("summary", "")
+        new_updated = fields.get("updated", "")
         comments = fields.get("comment", {}).get("comments", [])
         new_last_comment_id = comments[-1]["id"] if comments else None
 
@@ -651,6 +655,7 @@ class TicketWatcher:
                     summary=new_summary,
                     old_labels=state.labels,
                     new_labels=new_labels,
+                    updated=new_updated,
                 )
             )
 
@@ -713,6 +718,9 @@ class TicketWatcher:
                     body=body,
                     author_account_id=author.get("accountId", ""),
                     author_display_name=author.get("displayName", ""),
+                    comment_id=comment.get("id") or "",
+                    created=comment.get("created") or "",
+                    updated=comment.get("updated") or "",
                 )
             )
 
@@ -919,6 +927,7 @@ class TicketWatcher:
                         if comment_cursor_unresolved
                         else new_last_comment_id
                     ),
+                    updated=new_updated,
                     prs=prs,
                     prd_pr_repo=prd_updates.get("prd_pr_repo", state.prd_pr_repo),
                     prd_pr_number=prd_updates.get("prd_pr_number", state.prd_pr_number),

@@ -26,6 +26,7 @@ def _make_state(ticket_key: str) -> TicketState:
         summary="Test",
         labels={"forge:approved"},
         last_comment_id="1",
+        updated="2026-09-17T10:46:58.789+0000",
         prs=[],
     )
 
@@ -76,6 +77,7 @@ def test_add_forwards_bootstrap_event_for_managed_ticket(monkeypatch):
     forward.assert_awaited_once()
     payload = forward.await_args.args[0]
     assert payload["issue"]["fields"]["labels"] == ["custom-label", "forge:managed"]
+    assert payload["issue"]["fields"]["updated"] == "2026-09-17T10:46:58.789+0000"
     change = payload["changelog"]["items"][0]
     assert change["fromString"] == "custom-label"
     assert change["toString"] == "custom-label, forge:managed"

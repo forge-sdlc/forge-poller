@@ -56,3 +56,20 @@ def test_get_comments_follows_start_at_across_pages(monkeypatch):
     assert first_params["maxResults"] == 100
     second_params = client.get.await_args_list[1].kwargs["params"]
     assert second_params["startAt"] == 100
+
+
+def test_get_issue_requests_updated_revision_field(monkeypatch):
+    _reset_settings(monkeypatch)
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"fields": {}}
+    client = AsyncMock()
+    client.get.return_value = response
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+
+    with patch("poller.jira.httpx.AsyncClient", return_value=context):
+        asyncio.run(JiraClient().get_issue("BUG-1"))
+
+    fields = client.get.await_args.kwargs["params"]["fields"].split(",")
+    assert "updated" in fields

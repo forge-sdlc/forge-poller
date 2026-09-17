@@ -10,6 +10,7 @@ def _make_state(ticket_key: str) -> TicketState:
         summary="Test ticket",
         labels={"forge:approved", "forge:retry"},
         last_comment_id="42",
+        updated="2026-09-17T10:46:58.789+0000",
         prs=[PrState(
             repo="org/repo",
             pr_number=7,
@@ -47,6 +48,7 @@ def test_save_and_load_roundtrip(tmp_path):
     assert restored.ticket_key == "AISOS-1"
     assert restored.issue_type == "Story"
     assert restored.labels == {"forge:approved", "forge:retry"}
+    assert restored.updated == "2026-09-17T10:46:58.789+0000"
     assert len(restored.prs) == 1
     assert restored.prs[0].pr_number == 7
     assert restored.prs[0].last_review_id == 999

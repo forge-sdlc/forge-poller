@@ -30,15 +30,23 @@ def _comment(comment_id: str, body: str, account_id: str, email: str | None = No
     }
 
 
-def _issue(comments: list[dict]):
+def _issue(
+    comments: list[dict],
+    *,
+    labels: list[str] | None = None,
+    updated: str | None = None,
+):
+    fields = {
+        "labels": labels or ["forge:managed"],
+        "comment": {"comments": comments},
+        "issuetype": {"name": "Bug"},
+        "status": {"name": "Open"},
+        "summary": "Comment polling",
+    }
+    if updated is not None:
+        fields["updated"] = updated
     return {
-        "fields": {
-            "labels": ["forge:managed"],
-            "comment": {"comments": comments},
-            "issuetype": {"name": "Bug"},
-            "status": {"name": "Open"},
-            "summary": "Comment polling",
-        }
+        "fields": fields
     }
 
 
@@ -95,6 +103,66 @@ def test_poll_forwards_all_new_comments_in_order(monkeypatch):
     bodies = [call.args[0]["comment"]["body"] for call in forwarded.await_args_list]
     assert bodies == ["! revise this", "? what next"]
     assert watcher._state["BUG-1"].last_comment_id == "3"
+
+
+def test_poll_preserves_jira_comment_revision_metadata(monkeypatch):
+    _reset_settings(monkeypatch)
+    watcher = _watcher(last_comment_id="1")
+    jira = AsyncMock()
+    new_comment = _comment("2", "! revise", "human")
+    new_comment.update(
+        {
+            "created": "2026-09-17T08:46:03.123+0000",
+            "updated": "2026-09-17T08:46:04.456+0000",
+        }
+    )
+    jira.get_issue.return_value = _issue(
+        [
+            _comment("1", "old", "human"),
+            new_comment,
+        ]
+    )
+    jira.get_remote_links.return_value = []
+    forwarded = AsyncMock()
+
+    with (
+        patch("poller.watcher.JiraClient", return_value=jira),
+        patch("poller.watcher.forwarder.forward_jira", forwarded),
+    ):
+        asyncio.run(watcher._poll("BUG-1"))
+
+    forwarded_comment = forwarded.await_args.args[0]["comment"]
+    assert {
+        "id": forwarded_comment.get("id"),
+        "created": forwarded_comment.get("created"),
+        "updated": forwarded_comment.get("updated"),
+    } == {
+        "id": "2",
+        "created": "2026-09-17T08:46:03.123+0000",
+        "updated": "2026-09-17T08:46:04.456+0000",
+    }
+
+
+def test_poll_preserves_jira_issue_revision_metadata_for_label_changes(monkeypatch):
+    _reset_settings(monkeypatch)
+    watcher = _watcher(last_comment_id="1")
+    jira = AsyncMock()
+    jira.get_issue.return_value = _issue(
+        [_comment("1", "old", "human")],
+        labels=["forge:managed", "forge:retry"],
+        updated="2026-09-17T10:46:58.789+0000",
+    )
+    jira.get_remote_links.return_value = []
+    forwarded = AsyncMock()
+
+    with (
+        patch("poller.watcher.JiraClient", return_value=jira),
+        patch("poller.watcher.forwarder.forward_jira", forwarded),
+    ):
+        asyncio.run(watcher._poll("BUG-1"))
+
+    forwarded_issue = forwarded.await_args.args[0]["issue"]
+    assert forwarded_issue["fields"]["updated"] == "2026-09-17T10:46:58.789+0000"
 
 
 def test_poll_forwards_bot_authored_jira_comments(monkeypatch):

@@ -24,7 +24,7 @@ class JiraClient:
         }
 
     async def get_issue(self, key: str) -> dict[str, Any]:
-        fields = "summary,issuetype,status,labels,comment"
+        fields = "summary,issuetype,status,labels,comment,updated"
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(
                 f"{self._base}/rest/api/3/issue/{key}",
