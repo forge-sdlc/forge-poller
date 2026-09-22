@@ -26,7 +26,7 @@ def _base_state(**overrides) -> TicketState:
         status="In Progress",
         summary="Test Feature",
         labels={"forge:managed", "forge:prd-pending"},
-        last_comment_id="10",
+        last_comment_id=None,
     )
     defaults.update(overrides)
     return TicketState(**defaults)

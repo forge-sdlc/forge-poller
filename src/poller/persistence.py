@@ -1,7 +1,10 @@
 import json
 import logging
 import os
+import tempfile
+from contextlib import suppress
 from dataclasses import asdict, fields
+from pathlib import Path
 
 from poller.models import PrState, TicketState
 
@@ -72,7 +75,20 @@ def load_state(path: str) -> dict[str, TicketState]:
 
 def save_state(path: str, state: dict[str, TicketState]) -> None:
     data = [_to_dict(s) for s in state.values()]
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp_path, path)
+    target = Path(path)
+    # Pending deliveries contain comment text and must survive a restart before send.
+    descriptor, tmp_path = tempfile.mkstemp(prefix=target.name + ".", dir=target.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, target)
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(tmp_path)

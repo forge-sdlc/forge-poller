@@ -3,6 +3,8 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 import poller.config as config_module
 from poller.jira import JiraClient
 
@@ -56,3 +58,41 @@ def test_get_comments_follows_start_at_across_pages(monkeypatch):
     assert first_params["maxResults"] == 100
     second_params = client.get.await_args_list[1].kwargs["params"]
     assert second_params["startAt"] == 100
+
+
+def test_get_issue_requests_updated_revision_field(monkeypatch):
+    _reset_settings(monkeypatch)
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"fields": {}}
+    client = AsyncMock()
+    client.get.return_value = response
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+
+    with patch("poller.jira.httpx.AsyncClient", return_value=context):
+        asyncio.run(JiraClient().get_issue("BUG-1"))
+
+    fields = client.get.await_args.kwargs["params"]["fields"].split(",")
+    assert set(fields) == {"summary", "issuetype", "status", "labels", "comment", "updated"}
+
+
+@pytest.mark.parametrize("second", [
+    {"comments": [], "startAt": 1, "total": 2},
+    {"comments": [{"id": "2"}], "startAt": 0, "total": 2},
+    {"comments": [{"id": "1"}], "startAt": 1, "total": 2},
+    {"comments": [{"body": "missing id"}], "startAt": 1, "total": 2},
+    {"comments": [{"id": "2"}], "startAt": 1, "total": 3},
+])
+def test_inconsistent_pagination_is_not_returned_as_complete(monkeypatch, second):
+    _reset_settings(monkeypatch)
+    first = _page([{"id": "1"}], start_at=0, max_results=100, total=2)
+    next_page = MagicMock()
+    next_page.json.return_value = second
+    client = AsyncMock()
+    client.get.side_effect = [first, next_page]
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+    with patch("poller.jira.httpx.AsyncClient", return_value=context):
+        with pytest.raises(ValueError, match="comment"):
+            asyncio.run(JiraClient().get_comments("BUG-1"))

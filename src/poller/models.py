@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -26,6 +27,8 @@ class TicketState:
     summary: str
     labels: set[str]
     last_comment_id: str | None
+    updated: str | None = field(default=None, kw_only=True)
+    pending_jira_delivery: dict[str, Any] | None = field(default=None, kw_only=True)
     prs: list[PrState] = field(default_factory=list)
     # PRD proposals PR tracking
     prd_pr_repo: str | None = None

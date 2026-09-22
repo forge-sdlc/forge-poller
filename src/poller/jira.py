@@ -24,7 +24,7 @@ class JiraClient:
         }
 
     async def get_issue(self, key: str) -> dict[str, Any]:
-        fields = "summary,issuetype,status,labels,comment"
+        fields = "summary,issuetype,status,labels,comment,updated"
         async with httpx.AsyncClient(headers=self._headers) as client:
             r = await client.get(
                 f"{self._base}/rest/api/3/issue/{key}",
@@ -43,6 +43,8 @@ class JiraClient:
         comments: list[dict[str, Any]] = []
         start_at = 0
         max_results = 100
+        expected_total: int | None = None
+        seen_ids: set[str] = set()
         async with httpx.AsyncClient(headers=self._headers) as client:
             while True:
                 r = await client.get(
@@ -56,9 +58,23 @@ class JiraClient:
                 r.raise_for_status()
                 data = r.json()
                 page = data.get("comments", [])
+                total = data.get("total")
+                if (
+                    not isinstance(total, int) or isinstance(total, bool) or total < 0
+                    or data.get("startAt") != start_at or not isinstance(page, list)
+                    or (expected_total is not None and total != expected_total)
+                    or start_at + len(page) > total
+                    or (not page and start_at < total)
+                ):
+                    raise ValueError(f"{key}: incomplete or changing Jira comment pagination; retry")
+                expected_total = total
+                for comment in page:
+                    comment_id = comment.get("id") if isinstance(comment, dict) else None
+                    if not isinstance(comment_id, str) or not comment_id or comment_id in seen_ids:
+                        raise ValueError(f"{key}: missing or duplicate comment ID during pagination")
+                    seen_ids.add(comment_id)
                 comments.extend(page)
-                total = int(data.get("total", len(comments)))
-                if not page or start_at + len(page) >= total:
+                if start_at + len(page) == total:
                     break
                 start_at += len(page)
         return comments

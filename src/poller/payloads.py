@@ -1,5 +1,7 @@
 from typing import Any
 
+from poller.jira_revisions import revision_time
+
 
 def label_changed(
     ticket_key: str,
@@ -8,17 +10,24 @@ def label_changed(
     summary: str,
     old_labels: set[str],
     new_labels: set[str],
+    *,
+    updated: str | None = None,
 ) -> dict[str, Any]:
+    issue_fields: dict[str, Any] = {
+        "issuetype": {"name": issue_type},
+        "status": {"name": status},
+        "summary": summary,
+        "labels": sorted(new_labels),
+    }
+    if updated is not None:
+        revision_time(updated, "issue.updated")
+        issue_fields["updated"] = updated
+
     return {
         "webhookEvent": "jira:issue_updated",
         "issue": {
             "key": ticket_key,
-            "fields": {
-                "issuetype": {"name": issue_type},
-                "status": {"name": status},
-                "summary": summary,
-                "labels": sorted(new_labels),
-            },
+            "fields": issue_fields,
         },
         "changelog": {
             "items": [
@@ -43,10 +52,34 @@ def comment_created(
     author_account_id: str,
     author_display_name: str,
     author_email: str = "",  # ignored — always blank so Forge gateway won't self-filter
+    *,
+    comment_id: str | None = None,
+    created: str | None = None,
+    updated: str | None = None,
 ) -> dict[str, Any]:
     # Leave emailAddress empty: Forge skips comment_created when email equals
     # JIRA_USER_EMAIL. Local single-account setups share that address with humans.
     _ = author_email
+    comment: dict[str, Any] = {
+        "body": body,
+        "author": {
+            "accountId": author_account_id,
+            "displayName": author_display_name,
+            "emailAddress": "",
+        },
+    }
+    # Legacy callers may omit metadata; polling always supplies a complete revision.
+    if any(value is not None for value in (comment_id, created, updated)):
+        if not isinstance(comment_id, str) or not comment_id.strip():
+            raise ValueError("Jira comment.id must be a non-empty string")
+        created_time = revision_time(created, "comment.created")
+        comment["id"] = comment_id
+        comment["created"] = created
+        if updated is not None:
+            if revision_time(updated, "comment.updated") < created_time:
+                raise ValueError("Jira comment.updated precedes comment.created")
+            comment["updated"] = updated
+
     return {
         "webhookEvent": "comment_created",
         "issue": {
@@ -58,14 +91,7 @@ def comment_created(
                 "labels": sorted(labels),
             },
         },
-        "comment": {
-            "body": body,
-            "author": {
-                "accountId": author_account_id,
-                "displayName": author_display_name,
-                "emailAddress": "",
-            },
-        },
+        "comment": comment,
         "user": {"accountId": author_account_id, "displayName": author_display_name},
     }
 

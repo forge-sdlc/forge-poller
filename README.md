@@ -58,6 +58,16 @@ Forge itself treats non-`!` / `?` / `/forge` bodies as informational. Author
 `emailAddress` is left blank in forwarded payloads so the gateway does not
 drop human comments in local single-account setups.
 
+Jira events include provider revision metadata. Invalid metadata or ambiguous
+comment ordering retains the polling cursor; labels are deferred when sending
+them would make pending comments stale or conflict at the same timestamp.
+Gateway acknowledgement means queued, not processed by the workflow.
+
+See [Jira delivery and legacy-ledger recovery](docs/jira-ledger-recovery.md)
+before upgrading an installation with existing unversioned ledger entries.
+The guide covers the optional dry-run-first operator script, verified replay,
+and the limitations that still require a combined Forge/poller change.
+
 The poller uses a single-process async scheduler. Newly watched and active PR
 tickets are checked close to `POLL_INTERVAL`; quieter ticket states and failures
 back off up to `POLLER_MAX_POLL_INTERVAL`. `POLLER_MAX_CONCURRENCY` bounds
